@@ -77,6 +77,11 @@ PreviewWidget::PreviewWidget(Document *doc, QWidget *parent)
             });
     connect(doc, &Document::playheadChanged, this,
             [this](const QString &seqId, double t) {
+                // scrubbing the timeline pulls the monitor back to Program
+                if (!m_programMode && !seqId.startsWith(QLatin1String("__")) &&
+                    seqId == m_doc->project().activeSequence) {
+                    m_tabs->setCurrentIndex(1);  // sets m_programMode
+                }
                 if (seqId != monitoredSequence()) return;
                 m_timecode->setText(formatTimecode(
                     t, monitoredSeq() ? monitoredSeq()->fps : 30.0));
@@ -324,31 +329,45 @@ void VideoArea::mousePressEvent(QMouseEvent *e) {
         }
     }
     // click-select the topmost video clip under the cursor
+    if (Clip *c = topClipAt(e->position())) {
+        m_doc->setSelectedClips({c->id});
+        return;
+    }
+    if (m_owner->m_programMode && m_owner->monitoredSeq())
+        m_doc->clearSelection();
+}
+
+Clip *VideoArea::topClipAt(const QPointF &pos) const {
     Sequence *aseq = m_owner->monitoredSeq();
     const QRectF fr = frameRect();
-    if (m_owner->m_programMode && aseq && !fr.isEmpty()) {
-        const double t = m_doc->playhead(aseq->id);
-        const double k = fr.width() / aseq->width;
-        for (int i = aseq->videoTracks.size() - 1; i >= 0; --i) {
-            if (aseq->videoTracks[i].muted) continue;
-            Clip *c = aseq->videoTracks[i].clipAt(t);
-            if (!c) continue;
-            const double local = c->clipLocal(t);
-            QSizeF nat = Compositor::clipNativeSize(m_doc->project(), *aseq, *c);
-            const double sx = c->scaleX.at(local);
-            const double sy = c->uniformScale ? sx : c->scaleY.at(local);
-            const QPointF ctr(
-                fr.left() + (aseq->width / 2.0 + c->posX.at(local)) * k,
-                fr.top() + (aseq->height / 2.0 + c->posY.at(local)) * k);
-            QRectF r(ctr.x() - nat.width() * sx * k / 2,
-                     ctr.y() - nat.height() * sy * k / 2, nat.width() * sx * k,
-                     nat.height() * sy * k);
-            if (r.contains(e->position())) {
-                m_doc->setSelectedClips({c->id});
-                return;
-            }
+    if (!m_owner->m_programMode || !aseq || fr.isEmpty()) return nullptr;
+    const double t = m_doc->playhead(aseq->id);
+    const double k = fr.width() / aseq->width;
+    for (int i = aseq->videoTracks.size() - 1; i >= 0; --i) {
+        if (aseq->videoTracks[i].muted) continue;
+        Clip *c = aseq->videoTracks[i].clipAt(t);
+        if (!c) continue;
+        const double local = c->clipLocal(t);
+        QSizeF nat = Compositor::clipNativeSize(m_doc->project(), *aseq, *c);
+        const double sx = c->scaleX.at(local);
+        const double sy = c->uniformScale ? sx : c->scaleY.at(local);
+        const QPointF ctr(fr.left() + (aseq->width / 2.0 + c->posX.at(local)) * k,
+                          fr.top() + (aseq->height / 2.0 + c->posY.at(local)) * k);
+        QRectF r(ctr.x() - nat.width() * sx * k / 2,
+                 ctr.y() - nat.height() * sy * k / 2, nat.width() * sx * k,
+                 nat.height() * sy * k);
+        if (r.contains(pos)) return c;
+    }
+    return nullptr;
+}
+
+void VideoArea::mouseDoubleClickEvent(QMouseEvent *e) {
+    // double-click a title in the monitor to edit its text
+    if (Clip *c = topClipAt(e->position())) {
+        if (c->type == ClipType::Text) {
+            m_doc->setSelectedClips({c->id});
+            emit m_doc->textEditRequested(c->id);
         }
-        m_doc->clearSelection();
     }
 }
 

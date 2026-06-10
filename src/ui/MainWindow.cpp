@@ -6,8 +6,10 @@
 #include "ui/PropertiesPanel.h"
 #include "ui/TimelineWidget.h"
 #include <QApplication>
+#include <QAudioDevice>
 #include <QCloseEvent>
 #include <QFileDialog>
+#include <QMediaDevices>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QSettings>
@@ -177,6 +179,26 @@ void MainWindow::buildMenus() {
                [this] { m_preview->goToStart(); });
     makeAction(play, "go_end", tr("Go to End"), QKeySequence(Qt::Key_End),
                [this] { m_preview->goToEnd(); });
+    play->addSeparator();
+    QMenu *audioOut = play->addMenu(tr("Audio Output"));
+    connect(audioOut, &QMenu::aboutToShow, this, [this, audioOut] {
+        audioOut->clear();
+        QSettings settings("velo", "velo");
+        const QByteArray current =
+            settings.value("audio/outputId").toByteArray();
+        auto addDevice = [&](const QString &label, const QByteArray &id) {
+            QAction *a = audioOut->addAction(label);
+            a->setCheckable(true);
+            a->setChecked(id == current);
+            connect(a, &QAction::triggered, this, [this, id] {
+                QSettings("velo", "velo").setValue("audio/outputId", id);
+                m_preview->stop();  // next play uses the new device
+            });
+        };
+        addDevice(tr("System default"), QByteArray());
+        for (const QAudioDevice &d : QMediaDevices::audioOutputs())
+            addDevice(d.description(), d.id());
+    });
 
     QMenu *tools = menuBar()->addMenu(tr("&Tools"));
     makeAction(tools, "tool_select", tr("Selection Tool"), QKeySequence("V"),

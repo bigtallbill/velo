@@ -251,6 +251,7 @@ TimelineView::TimelineView(Document *doc, QWidget *parent)
     });
     connect(doc, &Document::selectionChanged, this, [this] { update(); });
     connect(doc, &Document::activeSequenceChanged, this, [this] {
+        m_transClip = 0;
         updateScrollbars();
         update();
     });
@@ -405,7 +406,7 @@ void TimelineView::paintEvent(QPaintEvent *) {
             }
 
             // transitions (wedges at clip edges)
-            auto wedge = [&](bool atStart, const Transition &trz) {
+            auto wedge = [&](bool atStart, const Transition &trz, bool selTr) {
                 if (trz.type == TransitionType::None) return;
                 const double w = qMin(trz.duration * m_pxPerSec, r.width());
                 QPainterPath path;
@@ -419,15 +420,20 @@ void TimelineView::paintEvent(QPaintEvent *) {
                     path.lineTo(r.right(), r.top());
                 }
                 path.closeSubpath();
-                p.fillPath(path, QColor(255, 255, 255, 60));
+                p.fillPath(path, QColor(255, 255, 255, selTr ? 110 : 60));
                 p.setPen(QPen(QColor(255, 255, 255, 140), 1));
                 p.drawLine(atStart ? QPointF(r.left() + w, r.top())
                                    : QPointF(r.right() - w, r.top()),
                            atStart ? QPointF(r.left() + w, r.bottom())
                                    : QPointF(r.right() - w, r.bottom()));
+                if (selTr) {
+                    p.setPen(QPen(Qt::white, 1.6));
+                    p.setBrush(Qt::NoBrush);
+                    p.drawPath(path);
+                }
             };
-            wedge(true, c.transIn);
-            wedge(false, c.transOut);
+            wedge(true, c.transIn, m_transClip == c.id && m_transSelIn);
+            wedge(false, c.transOut, m_transClip == c.id && !m_transSelIn);
 
             // label
             p.setPen(isSel ? Qt::white : QColor(255, 255, 255, 200));
@@ -515,6 +521,54 @@ void TimelineView::paintEvent(QPaintEvent *) {
         }
     }
 
+    // ---- effect / transition drag-over preview ---------------------------------
+    if (!m_fxId.isEmpty() && m_fxClip) {
+        const EffectDesc *desc = EffectRegistry::instance()->byId(m_fxId);
+        auto findRect = [&](quint64 id, QRectF &out) {
+            for (const Row &row : rows) {
+                Track *track = trackFor(row);
+                if (!track) continue;
+                if (Clip *c = track->clipById(id)) {
+                    out = clipRect(row, *c);
+                    return true;
+                }
+            }
+            return false;
+        };
+        QRectF r;
+        if (desc && findRect(m_fxClip, r)) {
+            if (desc->isTransition) {
+                // grey wedge outline where the transition will sit
+                auto previewWedge = [&](const QRectF &cr, bool atStart) {
+                    const double w = qMin(0.5 * m_pxPerSec, cr.width() / 2);
+                    QPainterPath path;
+                    if (atStart) {
+                        path.moveTo(cr.left(), cr.bottom());
+                        path.lineTo(cr.left() + w, cr.top());
+                        path.lineTo(cr.left(), cr.top());
+                    } else {
+                        path.moveTo(cr.right(), cr.bottom());
+                        path.lineTo(cr.right() - w, cr.top());
+                        path.lineTo(cr.right(), cr.top());
+                    }
+                    path.closeSubpath();
+                    p.fillPath(path, QColor(220, 220, 220, 70));
+                    p.setPen(QPen(QColor(230, 230, 230, 200), 1.4, Qt::DashLine));
+                    p.setBrush(Qt::NoBrush);
+                    p.drawPath(path);
+                };
+                previewWedge(r, m_fxAtStart);
+                QRectF ro;
+                if (m_fxOther && findRect(m_fxOther, ro))
+                    previewWedge(ro, !m_fxAtStart);  // spans the cut
+            } else {
+                p.setPen(QPen(QColor(230, 230, 230, 220), 2, Qt::DashLine));
+                p.setBrush(QColor(255, 255, 255, 30));
+                p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 3, 3);
+            }
+        }
+    }
+
     // ---- drop ghost -----------------------------------------------------------
     if (!m_dropRef.isEmpty() && m_dropT >= 0) {
         const Row *row = rowFor(m_dropType, m_dropTrack, rows);
@@ -554,14 +608,14 @@ void TimelineView::paintEvent(QPaintEvent *) {
     for (double t = t0;; t += tickStep) {
         int x = xAt(t);
         if (x > width()) break;
-        if (x < kHeaderW) continue;
-        p.drawLine(x, kRulerH - 7, x, kRulerH);
-        p.drawText(x + 3, kRulerH - 9, formatTimecode(t, s->fps));
-        // minor ticks
+        // minor ticks always — including the partial segment at the left edge
         for (int m = 1; m < 5; ++m) {
             int mx = xAt(t + tickStep * m / 5.0);
             if (mx >= kHeaderW && mx <= width()) p.drawLine(mx, kRulerH - 3, mx, kRulerH);
         }
+        if (x < kHeaderW) continue;
+        p.drawLine(x, kRulerH - 7, x, kRulerH);
+        p.drawText(x + 3, kRulerH - 9, formatTimecode(t, s->fps));
     }
     p.fillRect(QRect(0, 0, kHeaderW, kRulerH), Theme::panel());
     p.setPen(Theme::textDim());
@@ -627,6 +681,19 @@ TimelineView::Hit TimelineView::hitTest(const QPointF &pos) {
             const double ox = r.right() - c.transOut.duration * m_pxPerSec;
             if (std::abs(pos.x() - ox) < 5 && pos.y() < r.top() + r.height() / 2) {
                 hit.transOut = true;
+                return hit;
+            }
+        }
+        // wedge bodies (upper half of the clip) select the transition
+        if (pos.y() < r.top() + r.height() * 0.55) {
+            if (c.transIn.type != TransitionType::None &&
+                pos.x() < r.left() + c.transIn.duration * m_pxPerSec) {
+                hit.transInBody = true;
+                return hit;
+            }
+            if (c.transOut.type != TransitionType::None &&
+                pos.x() > r.right() - c.transOut.duration * m_pxPerSec) {
+                hit.transOutBody = true;
                 return hit;
             }
         }
@@ -699,6 +766,10 @@ void TimelineView::mousePressEvent(QMouseEvent *e) {
     m_pressPos = e->position();
     m_dragStarted = false;
     m_snapIndicator = -1;
+    if (m_transClip) {  // clicking elsewhere deselects a transition
+        m_transClip = 0;
+        update();
+    }
 
     if (e->button() != Qt::LeftButton) return;
 
@@ -745,6 +816,14 @@ void TimelineView::mousePressEvent(QMouseEvent *e) {
         m_drag = hit.transIn ? Drag::TransIn : Drag::TransOut;
         return;
     }
+    if (hit.transInBody || hit.transOutBody) {
+        // select the transition itself (Del / right-click removes it)
+        m_transClip = hit.clip->id;
+        m_transSelIn = hit.transInBody;
+        m_doc->clearSelection();
+        update();
+        return;
+    }
     if (hit.volumeKeyT >= 0) {
         m_doc->beginUndoStep();
         m_drag = Drag::VolumeKey;
@@ -770,30 +849,35 @@ void TimelineView::mousePressEvent(QMouseEvent *e) {
         }
     }
 
-    // selection
+    // selection — Alt+click picks just this half of a linked A/V pair
+    const bool solo = e->modifiers() & Qt::AltModifier;
     QSet<quint64> sel = m_doc->selectedClips();
     if (e->modifiers() & Qt::ControlModifier) {
         if (sel.contains(hit.clip->id)) sel.remove(hit.clip->id);
         else sel.insert(hit.clip->id);
         m_doc->setSelectedClips(sel);
+    } else if (solo) {
+        m_doc->setSelectedClips({hit.clip->id});
     } else if (!sel.contains(hit.clip->id)) {
         m_doc->setSelectedClips(m_doc->withLinked(s->id, {hit.clip->id}));
     }
 
     if (hit.leftEdge || hit.rightEdge) {
-        // trim the clicked clip and its linked partner together
+        // trim the clicked clip and its linked partner together (Alt = solo)
         m_doc->beginUndoStep();
         m_drag = hit.leftEdge ? Drag::TrimLeft : Drag::TrimRight;
-        m_dragIds = m_doc->withLinked(s->id, {hit.clip->id});
+        m_dragIds = solo ? QSet<quint64>{hit.clip->id}
+                         : m_doc->withLinked(s->id, {hit.clip->id});
         m_dragOrig.clear();
         for (quint64 id : std::as_const(m_dragIds))
             if (Clip *c = s->findClip(id)) m_dragOrig[id] = *c;
         return;
     }
 
-    // prepare move drag
+    // prepare move drag (Alt = move only the selected halves)
     m_drag = deferVolume ? Drag::VolumeOrMove : Drag::MoveClips;
-    m_dragIds = m_doc->withLinked(s->id, m_doc->selectedClips());
+    m_dragIds = solo ? m_doc->selectedClips()
+                     : m_doc->withLinked(s->id, m_doc->selectedClips());
     m_dragOrig.clear();
     m_dragTrack.clear();
     for (const Row &row : rows) {
@@ -1069,8 +1153,12 @@ void TimelineView::mouseDoubleClickEvent(QMouseEvent *e) {
         m_doc->notifySequenceChanged(s->id);
         return;
     }
-    if (hit.clip && hit.clip->type == ClipType::Nested)
+    if (hit.clip && hit.clip->type == ClipType::Nested) {
         m_doc->openSequenceTab(hit.clip->mediaId);  // dive into the nest
+    } else if (hit.clip && hit.clip->type == ClipType::Text) {
+        m_doc->setSelectedClips({hit.clip->id});
+        emit m_doc->textEditRequested(hit.clip->id);
+    }
 }
 
 void TimelineView::applyHeaderClick(const Row &row, const QPointF &pos,
@@ -1149,6 +1237,16 @@ void TimelineView::splitAtPlayhead(bool selectedOnly) {
 void TimelineView::deleteSelected(bool ripple) {
     Sequence *s = seq();
     if (!s) return;
+    if (m_transClip) {  // a selected transition wedge takes precedence
+        if (Clip *c = s->findClip(m_transClip)) {
+            m_doc->beginUndoStep();
+            (m_transSelIn ? c->transIn : c->transOut) = Transition();
+            m_doc->notifySequenceChanged(s->id);
+        }
+        m_transClip = 0;
+        update();
+        return;
+    }
     m_doc->deleteClips(s->id, m_doc->selectedClips(), ripple);
 }
 
@@ -1182,6 +1280,19 @@ void TimelineView::contextMenuEvent(QContextMenuEvent *e) {
     Hit hit = hitTest(QPointF(e->pos()));
     QMenu menu(this);
 
+    // right-click on a transition wedge
+    if (hit.clip && (hit.transInBody || hit.transOutBody || hit.transIn ||
+                     hit.transOut)) {
+        const bool isIn = hit.transInBody || hit.transIn;
+        m_transClip = hit.clip->id;
+        m_transSelIn = isIn;
+        update();
+        QAction *rm = menu.addAction(tr("Remove Transition\tDel"));
+        QAction *chosen = menu.exec(e->globalPos());
+        if (chosen == rm) deleteSelected(false);
+        return;
+    }
+
     if (hit.clip) {
         if (!m_doc->selectedClips().contains(hit.clip->id))
             m_doc->setSelectedClips(m_doc->withLinked(s->id, {hit.clip->id}));
@@ -1190,9 +1301,18 @@ void TimelineView::contextMenuEvent(QContextMenuEvent *e) {
         QAction *split = menu.addAction(tr("Split at Playhead\tS"));
         QAction *speed = menu.addAction(tr("Speed / Duration…\tR"));
         QAction *nest = menu.addAction(tr("Chain into Nested Sequence\tAlt+C"));
-        QAction *unlink = nullptr;
-        if (hit.clip->linkId)
+        QAction *unlink = nullptr, *link = nullptr;
+        if (hit.clip->linkId) {
             unlink = menu.addAction(tr("Unlink Audio/Video"));
+        } else if (m_doc->selectedClips().size() == 2) {
+            // exactly one video-kind + one audio clip selected -> offer Link
+            int nVideo = 0, nAudio = 0;
+            for (quint64 id : m_doc->selectedClips())
+                if (const Clip *c = s->findClipConst(id))
+                    (c->type == ClipType::Audio ? nAudio : nVideo)++;
+            if (nVideo == 1 && nAudio == 1)
+                link = menu.addAction(tr("Link Audio/Video"));
+        }
         QAction *toggle = menu.addAction(hit.clip->enabled ? tr("Disable")
                                                            : tr("Enable"));
         menu.addSeparator();
@@ -1223,12 +1343,14 @@ void TimelineView::contextMenuEvent(QContextMenuEvent *e) {
             bool ok = false;
             double v = QInputDialog::getDouble(
                 this, tr("Clip Speed"), tr("Speed (%):"),
-                hit.clip->speed * 100.0, 5, 2000, 1, &ok);
+                hit.clip->speed * 100.0, 0.1, 1000000, 1, &ok);
             if (ok) m_doc->setClipSpeed(s->id, clipId, v / 100.0);
         } else if (chosen == nest) {
             nestSelected();
         } else if (unlink && chosen == unlink) {
             m_doc->unlinkClips(s->id, m_doc->selectedClips());
+        } else if (link && chosen == link) {
+            m_doc->linkClips(s->id, m_doc->selectedClips());
         } else if (chosen == toggle) {
             m_doc->beginUndoStep();
             for (quint64 id : m_doc->selectedClips())
@@ -1290,8 +1412,10 @@ void TimelineView::contextMenuEvent(QContextMenuEvent *e) {
 // ------------------------------------------------------------------ drag & drop
 void TimelineView::dragEnterEvent(QDragEnterEvent *e) {
     if (e->mimeData()->hasFormat(kItemMime) ||
-        e->mimeData()->hasFormat(kEffectMime))
-        e->acceptProposedAction();
+        e->mimeData()->hasFormat(kEffectMime)) {
+        e->setDropAction(Qt::CopyAction);  // shows a "+" cursor, not ⊘
+        e->accept();
+    }
 }
 
 void TimelineView::dragMoveEvent(QDragMoveEvent *e) {
@@ -1322,11 +1446,39 @@ void TimelineView::dragMoveEvent(QDragMoveEvent *e) {
             m_dropTrack = 0;
         }
         update();
-        e->acceptProposedAction();
+        e->setDropAction(Qt::CopyAction);
+        e->accept();
         return;
     }
     if (e->mimeData()->hasFormat(kEffectMime)) {
-        e->acceptProposedAction();
+        // live preview of where the effect/transition will land
+        m_fxId = QString::fromUtf8(e->mimeData()->data(kEffectMime));
+        m_fxClip = 0;
+        m_fxOther = 0;
+        Hit hit = hitTest(e->position());
+        if (hit.clip) {
+            m_fxClip = hit.clip->id;
+            const QRectF r = hit.rect;
+            m_fxAtStart = e->position().x() < r.center().x();
+            // dropping near a cut spans the transition across both clips
+            const double nearZone = qMax(12.0, qMin(40.0, r.width() / 3.0));
+            const double edgeDist = m_fxAtStart ? e->position().x() - r.left()
+                                                : r.right() - e->position().x();
+            if (hit.track && edgeDist < nearZone) {
+                for (const Clip &o : hit.track->clips) {
+                    if (o.id == hit.clip->id) continue;
+                    if (m_fxAtStart &&
+                        std::abs(o.end() - hit.clip->start) < 0.05)
+                        m_fxOther = o.id;
+                    if (!m_fxAtStart &&
+                        std::abs(o.start - hit.clip->end()) < 0.05)
+                        m_fxOther = o.id;
+                }
+            }
+        }
+        update();
+        e->setDropAction(Qt::CopyAction);
+        e->accept();
     }
 }
 
@@ -1334,6 +1486,9 @@ void TimelineView::dragLeaveEvent(QDragLeaveEvent *) {
     m_dropRef.clear();
     m_dropT = -1;
     m_snapIndicator = -1;
+    m_fxId.clear();
+    m_fxClip = 0;
+    m_fxOther = 0;
     update();
 }
 
@@ -1375,15 +1530,38 @@ void TimelineView::dropEvent(QDropEvent *e) {
             QString::fromUtf8(e->mimeData()->data(kEffectMime));
         const EffectDesc *desc = EffectRegistry::instance()->byId(effectId);
         Hit hit = hitTest(e->position());
-        if (!desc || !hit.clip) return;
+        const quint64 otherId = m_fxOther;
+        const bool atStart = m_fxAtStart;
+        m_fxId.clear();
+        m_fxClip = 0;
+        m_fxOther = 0;
+        if (!desc || !hit.clip) {
+            update();
+            return;
+        }
         m_doc->beginUndoStep();
         if (desc->isTransition) {
-            const bool atStart =
-                e->position().x() < hit.rect.center().x();
-            Transition tr0{desc->transitionType,
-                           qMin(1.0, hit.clip->duration / 2)};
-            if (atStart) hit.clip->transIn = tr0;
-            else hit.clip->transOut = tr0;
+            Clip *other = otherId ? s->findClip(otherId) : nullptr;
+            if (other) {
+                // spanning a cut: outgoing fades out, incoming fades in
+                Clip *left = atStart ? other : hit.clip;
+                Clip *right = atStart ? hit.clip : other;
+                const double dur =
+                    std::min({0.5, left->duration / 2, right->duration / 2});
+                if (desc->transitionType == TransitionType::CrossDissolve) {
+                    // rendered from the incoming side (blends both clips)
+                    right->transIn = {TransitionType::CrossDissolve,
+                                      qMin(1.0, right->duration / 2)};
+                } else {
+                    left->transOut = {desc->transitionType, dur};
+                    right->transIn = {desc->transitionType, dur};
+                }
+            } else {
+                Transition tr0{desc->transitionType,
+                               qMin(1.0, hit.clip->duration / 2)};
+                if (atStart) hit.clip->transIn = tr0;
+                else hit.clip->transOut = tr0;
+            }
         } else if (desc->isAudio) {
             if (hit.clip->type == ClipType::Audio ||
                 hit.clip->type == ClipType::Nested)

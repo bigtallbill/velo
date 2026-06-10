@@ -125,7 +125,8 @@ private:
         bool leftEdge = false, rightEdge = false;
         bool volumeLine = false;
         double volumeKeyT = -1;  // clip-local key time when on a key dot
-        bool transIn = false, transOut = false;
+        bool transIn = false, transOut = false;        // resize handles
+        bool transInBody = false, transOutBody = false;  // wedge bodies
     };
     Hit hitTest(const QPointF &pos);
 
@@ -165,6 +166,16 @@ private:
     int m_dropTrack = 0;
     TrackType m_dropType = TrackType::Video;
     double m_dropDur = 5;
+
+    // effect/transition drag-over preview
+    QString m_fxId;          // effect being dragged (empty = none)
+    quint64 m_fxClip = 0;    // hovered clip
+    bool m_fxAtStart = true;
+    quint64 m_fxOther = 0;   // adjacent clip when dropping onto a cut
+
+    // selected transition wedge (Del removes it)
+    quint64 m_transClip = 0;
+    bool m_transSelIn = true;
 
     static constexpr int kHeaderW = 170;
     static constexpr int kRulerH = 26;

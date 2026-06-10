@@ -50,6 +50,7 @@ private:
     QProgressBar *m_progress;
     QLabel *m_stage;
     QPushButton *m_exportBtn = nullptr;
+    QWidget *m_settings = nullptr;  // disabled while an export runs
     Exporter *m_exporter = nullptr;
 };
 

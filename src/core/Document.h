@@ -71,6 +71,9 @@ public:
     void deleteClips(const QString &seqId, const QSet<quint64> &ids, bool ripple);
     QString nestClips(const QString &seqId, const QSet<quint64> &ids);
     void unlinkClips(const QString &seqId, const QSet<quint64> &ids);
+    // Link one video-kind and one audio clip into an A/V pair.
+    void linkClips(const QString &seqId, const QSet<quint64> &ids);
+    void removeSequence(const QString &seqId);
     void setClipSpeed(const QString &seqId, quint64 id, double speed);
     // Close the empty gap on a track at time t (shifts later clips left).
     void closeGap(const QString &seqId, TrackType type, int trackIdx, double t);
@@ -95,6 +98,8 @@ public:
     void markDirty() { m_dirty = true; }
 
 signals:
+    // a view asks the properties panel to focus the text editor of this clip
+    void textEditRequested(quint64 clipId);
     void mediaChanged();
     void sequenceListChanged();
     void sequenceChanged(const QString &seqId);

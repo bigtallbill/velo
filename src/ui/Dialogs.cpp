@@ -121,7 +121,9 @@ ExportDialog::ExportDialog(Document *doc, const QString &seqId, QWidget *parent)
     const Sequence *seq = doc->project().sequenceByIdConst(seqId);
 
     auto *lay = new QVBoxLayout(this);
-    auto *form = new QFormLayout;
+    m_settings = new QWidget;
+    auto *form = new QFormLayout(m_settings);
+    form->setContentsMargins(0, 0, 0, 0);
 
     auto *pathRow = new QHBoxLayout;
     m_path = new QLineEdit(QDir::homePath() + "/" +
@@ -178,7 +180,7 @@ ExportDialog::ExportDialog(Document *doc, const QString &seqId, QWidget *parent)
 
     m_audioOnly = new QCheckBox(tr("Audio only"));
     form->addRow(QString(), m_audioOnly);
-    lay->addLayout(form);
+    lay->addWidget(m_settings);
 
     m_progress = new QProgressBar;
     m_progress->setRange(0, 100);
@@ -229,6 +231,7 @@ void ExportDialog::startExport() {
     s.audioBitrateKbps = m_audioKbps->value();
     s.audioOnly = m_audioOnly->isChecked();
     m_exportBtn->setEnabled(false);
+    m_settings->setEnabled(false);  // no changing settings mid-export
     m_stage->setText(tr("Starting…"));
     m_exporter = new Exporter(&m_doc->project(), m_doc->mutex(), m_seqId, s, this);
     connect(m_exporter, &Exporter::progress, this,
@@ -239,6 +242,7 @@ void ExportDialog::startExport() {
     connect(m_exporter, &Exporter::finished, this,
             [this](bool ok, const QString &msg) {
                 m_exportBtn->setEnabled(true);
+                m_settings->setEnabled(true);
                 if (ok) {
                     m_progress->setValue(100);
                     m_stage->setText(tr("Exported to %1").arg(msg));

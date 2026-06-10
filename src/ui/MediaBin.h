@@ -18,9 +18,12 @@ signals:
     void previewRequested(const QString &mediaId);  // double-clicked media
 
 private:
+    friend class MediaListWidget;
     void refresh();
     void makeThumbnail(const QString &mediaId);
     void contextMenu(const QPoint &pos);
+    void removeRef(const QString &ref);
+    void deleteSelectedItems();
 
     Document *m_doc;
     QListWidget *m_list;
@@ -33,12 +36,17 @@ protected:
     void dropEvent(QDropEvent *e) override;
 };
 
-// QListWidget that emits our custom drag mime data.
+// QListWidget that emits our custom drag mime data and handles Del.
 class MediaListWidget : public QListWidget {
     Q_OBJECT
 public:
-    using QListWidget::QListWidget;
+    explicit MediaListWidget(MediaBin *bin) : m_bin(bin) {}
 
 protected:
     QMimeData *mimeData(const QList<QListWidgetItem *> &items) const override;
+    bool event(QEvent *e) override;          // claim Del via ShortcutOverride
+    void keyPressEvent(QKeyEvent *e) override;
+
+private:
+    MediaBin *m_bin;
 };

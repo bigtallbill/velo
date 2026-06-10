@@ -66,12 +66,14 @@ protected:
     void mousePressEvent(QMouseEvent *) override;
     void mouseMoveEvent(QMouseEvent *) override;
     void mouseReleaseEvent(QMouseEvent *) override;
+    void mouseDoubleClickEvent(QMouseEvent *) override;
 
 private:
     enum class DragMode { None, Move, Scale };
     QRectF frameRect() const;  // where the frame is drawn (letterboxed)
     // selected clip geometry in widget coords (ignores rotation for hits)
     bool selectedClipRect(QRectF &out, Clip **clip, Sequence **seq) const;
+    Clip *topClipAt(const QPointF &pos) const;  // topmost video clip under pos
 
     PreviewWidget *m_owner;
     Document *m_doc;

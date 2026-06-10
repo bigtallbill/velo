@@ -143,6 +143,23 @@ void vignette(QImage &img, double amount) {
     });
 }
 
+void cropEdges(QImage &img, double l, double r, double t, double b) {
+    const int w = img.width(), h = img.height();
+    const int x0 = qBound(0, int(w * l / 100.0), w);
+    const int x1 = qBound(0, w - int(w * r / 100.0), w);
+    const int y0 = qBound(0, int(h * t / 100.0), h);
+    const int y1 = qBound(0, h - int(h * b / 100.0), h);
+    forEachRow(img, [&](int y) {
+        QRgb *px = reinterpret_cast<QRgb *>(img.scanLine(y));
+        if (y < y0 || y >= y1) {
+            std::fill(px, px + w, qRgba(0, 0, 0, 0));
+            return;
+        }
+        std::fill(px, px + x0, qRgba(0, 0, 0, 0));
+        std::fill(px + qMax(x0, x1), px + w, qRgba(0, 0, 0, 0));
+    });
+}
+
 void blackWhite(QImage &img, double mix) {
     const double m = qBound(0.0, mix / 100.0, 1.0);
     forEachRow(img, [&](int y) {
@@ -205,6 +222,18 @@ EffectRegistry::EffectRegistry() {
         {{"mix", "Mix", 0, 100, 100, 1, 0}},
         [](QImage &img, const QMap<QString, double> &p, double) {
             blackWhite(img, p.value("mix", 100));
+        }});
+    registerEffect({
+        "crop", "Crop", "Transform",
+        {{"left", "Left %", 0, 100, 0, 1, 1},
+         {"right", "Right %", 0, 100, 0, 1, 1},
+         {"top", "Top %", 0, 100, 0, 1, 1},
+         {"bottom", "Bottom %", 0, 100, 0, 1, 1}},
+        [](QImage &img, const QMap<QString, double> &p, double) {
+            if (p.value("left") + p.value("right") + p.value("top") +
+                    p.value("bottom") > 0.01)
+                cropEdges(img, p.value("left"), p.value("right"),
+                          p.value("top"), p.value("bottom"));
         }});
     registerEffect({
         "vignette", "Vignette", "Stylize",

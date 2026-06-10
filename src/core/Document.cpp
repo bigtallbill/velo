@@ -472,38 +472,73 @@ void Document::splitAt(const QString &seqId, double t, bool selectedOnly) {
     notifySequenceChanged(seqId);
 }
 
-void Document::deleteClips(const QString &seqId, const QSet<quint64> &idsIn,
+void Document::deleteClips(const QString &seqId, const QSet<quint64> &ids,
                            bool ripple) {
-    if (idsIn.isEmpty()) return;
+    if (ids.isEmpty()) return;
     beginUndoStep();
     {
         QMutexLocker lock(&m_mutex);
         Sequence *seq = m_project.sequenceById(seqId);
         if (!seq) return;
-        QSet<quint64> ids = withLinked(seqId, idsIn);
+        // note: `ids` is used as-is — a normal click already selects linked
+        // partners, and Alt+click deliberately selects a single half.
+        struct Span {
+            double s, e;
+        };
+        QList<Span> spans;
+        bool sandwiched = false;
         for (auto *list : {&seq->videoTracks, &seq->audioTracks}) {
             for (auto &track : *list) {
                 if (track.locked) continue;
                 for (int i = 0; i < track.clips.size(); ++i) {
                     if (!ids.contains(track.clips[i].id)) continue;
-                    const double gapStart = track.clips[i].start;
-                    const double gapLen = track.clips[i].duration;
-                    track.clips.removeAt(i--);
-                    // ripple only when the clip is really sandwiched between
-                    // clips on its track; otherwise it is a plain delete
+                    const Clip &victim = track.clips[i];
                     bool before = false, after = false;
                     for (const auto &c : track.clips) {
                         if (ids.contains(c.id)) continue;
-                        if (c.end() <= gapStart + 1e-6) before = true;
-                        if (c.start >= gapStart + gapLen - 1e-6) after = true;
+                        if (c.end() <= victim.start + 1e-6) before = true;
+                        if (c.start >= victim.end() - 1e-6) after = true;
                     }
-                    if (ripple && before && after) {
-                        for (auto &c : track.clips)
-                            if (c.start >= gapStart + gapLen - 1e-6)
-                                c.start -= gapLen;
-                        track.sortClips();
-                    }
+                    if (before && after) sandwiched = true;
+                    spans.append({victim.start, victim.end()});
+                    track.clips.removeAt(i--);
                 }
+            }
+        }
+        // Ripple: close each removed span across ALL unlocked tracks so
+        // linked A/V (and everything else) stays in sync — but only when at
+        // least one removed clip was really sandwiched on its own track.
+        if (ripple && sandwiched) {
+            std::sort(spans.begin(), spans.end(),
+                      [](const Span &a, const Span &b) { return a.s > b.s; });
+            double lastS = -1, lastE = -1;
+            for (const Span &sp : std::as_const(spans)) {
+                if (std::abs(sp.s - lastS) < 1e-6 && std::abs(sp.e - lastE) < 1e-6)
+                    continue;  // linked pair shares one span
+                lastS = sp.s;
+                lastE = sp.e;
+                double shift = sp.e - sp.s;
+                for (const auto *list : {&seq->videoTracks, &seq->audioTracks})
+                    for (const auto &tr : *list) {
+                        if (tr.locked) continue;
+                        double stayEnd = 0, moveStart = 1e18;
+                        for (const Clip &c : tr.clips) {
+                            if (c.start >= sp.e - 1e-6)
+                                moveStart = qMin(moveStart, c.start);
+                            else
+                                stayEnd = qMax(stayEnd, c.end());
+                        }
+                        if (moveStart < 1e17)
+                            shift = qMin(shift, moveStart - stayEnd);
+                    }
+                if (shift <= 1e-6) continue;
+                for (auto *list : {&seq->videoTracks, &seq->audioTracks})
+                    for (auto &tr : *list) {
+                        if (tr.locked) continue;
+                        for (Clip &c : tr.clips)
+                            if (c.start >= sp.e - 1e-6) c.start -= shift;
+                        tr.sortClips();
+                    }
             }
         }
         m_selectedClips.clear();
@@ -606,8 +641,55 @@ void Document::unlinkClips(const QString &seqId, const QSet<quint64> &ids) {
     notifySequenceChanged(seqId);
 }
 
+void Document::linkClips(const QString &seqId, const QSet<quint64> &ids) {
+    beginUndoStep();
+    {
+        QMutexLocker lock(&m_mutex);
+        Sequence *seq = m_project.sequenceById(seqId);
+        if (!seq) return;
+        Clip *video = nullptr, *audio = nullptr;
+        for (quint64 id : ids) {
+            Clip *c = seq->findClip(id);
+            if (!c) continue;
+            if (c->type == ClipType::Audio) audio = c;
+            else video = c;
+        }
+        if (!video || !audio) return;
+        const quint64 link = m_project.takeClipId();
+        video->linkId = link;
+        audio->linkId = link;
+    }
+    notifySequenceChanged(seqId);
+}
+
+void Document::removeSequence(const QString &seqId) {
+    beginUndoStep();
+    {
+        QMutexLocker lock(&m_mutex);
+        for (int i = 0; i < m_project.sequences.size(); ++i)
+            if (m_project.sequences[i].id == seqId)
+                m_project.sequences.removeAt(i--);
+        // drop nested clips that pointed at it
+        for (auto &seq : m_project.sequences)
+            for (auto &t : seq.videoTracks)
+                for (int i = 0; i < t.clips.size(); ++i)
+                    if (t.clips[i].type == ClipType::Nested &&
+                        t.clips[i].mediaId == seqId)
+                        t.clips.removeAt(i--);
+        m_project.openTabs.removeAll(seqId);
+        if (m_project.activeSequence == seqId)
+            m_project.activeSequence =
+                m_project.openTabs.isEmpty() ? QString() : m_project.openTabs.last();
+        m_selectedClips.clear();
+    }
+    emit sequenceListChanged();
+    emit activeSequenceChanged(m_project.activeSequence);
+    emit selectionChanged();
+    for (const auto &s : m_project.sequences) emit sequenceChanged(s.id);
+}
+
 void Document::setClipSpeed(const QString &seqId, quint64 id, double speed) {
-    speed = qBound(0.05, speed, 20.0);
+    speed = qBound(0.001, speed, 10000.0);
     beginUndoStep();
     {
         QMutexLocker lock(&m_mutex);

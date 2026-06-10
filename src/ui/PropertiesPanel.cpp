@@ -12,6 +12,8 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScrollBar>
+#include <QTimer>
 #include <QSpinBox>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -122,16 +124,25 @@ PropertiesPanel::PropertiesPanel(Document *doc, QWidget *parent)
     : QWidget(parent), m_doc(doc) {
     auto *outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
-    auto *scroll = new QScrollArea;
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-    outer->addWidget(scroll);
+    m_scroll = new QScrollArea;
+    m_scroll->setWidgetResizable(true);
+    m_scroll->setFrameShape(QFrame::NoFrame);
+    outer->addWidget(m_scroll);
     m_content = new QWidget;
-    scroll->setWidget(m_content);
+    m_scroll->setWidget(m_content);
     new QVBoxLayout(m_content);
 
     connect(doc, &Document::selectionChanged, this, &PropertiesPanel::rebuild);
     connect(doc, &Document::projectLoaded, this, &PropertiesPanel::rebuild);
+    connect(doc, &Document::textEditRequested, this, [this](quint64) {
+        // selection change already rebuilt the panel; focus the editor next tick
+        QTimer::singleShot(0, this, [this] {
+            if (m_textEdit) {
+                m_textEdit->setFocus();
+                m_textEdit->selectAll();
+            }
+        });
+    });
     connect(doc, &Document::playheadChanged, this,
             [this](const QString &, double) { refreshValues(); });
     connect(doc, &Document::sequenceChanged, this, [this](const QString &) {
@@ -171,7 +182,9 @@ ParamRow *PropertiesPanel::addRow(QVBoxLayout *lay, const QString &label,
 }
 
 void PropertiesPanel::rebuild() {
+    const int scrollPos = m_scroll->verticalScrollBar()->value();
     m_rows.clear();
+    m_textEdit = nullptr;
     delete m_content->layout();
     qDeleteAll(m_content->findChildren<QWidget *>(QString(),
                                                   Qt::FindDirectChildrenOnly));
@@ -197,6 +210,10 @@ void PropertiesPanel::rebuild() {
         lay->addWidget(lbl);
     }
     lay->addStretch(1);
+    // keep the user's scroll position across refreshes
+    QTimer::singleShot(0, this, [this, scrollPos] {
+        m_scroll->verticalScrollBar()->setValue(scrollPos);
+    });
 }
 
 void PropertiesPanel::buildTrackUi(QVBoxLayout *lay) {
@@ -335,7 +352,7 @@ void PropertiesPanel::buildClipUi(QVBoxLayout *lay, quint64 clipId) {
         auto *row = new QHBoxLayout;
         row->addWidget(new QLabel(tr("Speed %")));
         auto *spin = new QDoubleSpinBox;
-        spin->setRange(5, 2000);
+        spin->setRange(0.1, 1000000);  // up to 10000x: a whole clip in a frame
         spin->setValue(clip->speed * 100.0);
         spin->setDecimals(1);
         spin->setKeyboardTracking(false);
@@ -355,6 +372,7 @@ void PropertiesPanel::buildClipUi(QVBoxLayout *lay, quint64 clipId) {
         auto *bl = static_cast<QVBoxLayout *>(box->layout());
         auto *edit = new QPlainTextEdit(clip->text.text);
         edit->setMaximumHeight(70);
+        m_textEdit = edit;
         bl->addWidget(edit);
         auto applyText = [this, resolveClip, seqId](auto fn) {
             if (Clip *c = resolveClip()) {

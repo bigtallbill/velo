@@ -3,7 +3,25 @@
 #include <QAudioFormat>
 #include <QMediaDevices>
 #include <QMutexLocker>
+#include <QSettings>
 #include <QVector>
+
+static double fadeSmooth(double f) {
+    f = qBound(0.0, f, 1.0);
+    return f * f * (3.0 - 2.0 * f);
+}
+
+// transition wedges on audio (and nested) clips act as volume fades
+static double transitionGain(const Clip &c, double tl) {
+    double g = 1.0;
+    const double local = tl - c.start;
+    const double remain = c.end() - tl;
+    if (c.transIn.type != TransitionType::None && local < c.transIn.duration)
+        g *= fadeSmooth(local / qMax(0.05, c.transIn.duration));
+    if (c.transOut.type != TransitionType::None && remain < c.transOut.duration)
+        g *= fadeSmooth(remain / qMax(0.05, c.transOut.duration));
+    return g;
+}
 
 void AudioMixer::mix(const QString &seqId, double t, int nFrames, float *out) {
     std::fill(out, out + nFrames * 2, 0.0f);
@@ -89,10 +107,11 @@ void AudioMixer::mixSequence(const Sequence &seq, double t, int nFrames,
             const double l1 = clip.clipLocal(tlT + double(n) / kRate);
             const double g0 = qMax(0.0, clip.volume.at(l0)) *
                               qMax(0.0, track.volume.at(tlT)) *
-                              audioEffectGain(clip, l0);
+                              audioEffectGain(clip, l0) * transitionGain(clip, tlT);
             const double g1 = qMax(0.0, clip.volume.at(l1)) *
                               qMax(0.0, track.volume.at(tlT + double(n) / kRate)) *
-                              audioEffectGain(clip, l1);
+                              audioEffectGain(clip, l1) *
+                              transitionGain(clip, tlT + double(n) / kRate);
             float *acc = out + f0 * 2;
             for (int i = 0; i < n; ++i) {
                 float g = float(g0 + (g1 - g0) * (double(i) / n));
@@ -132,6 +151,15 @@ AudioEngine::AudioEngine(Project *project, QRecursiveMutex *mutex, QObject *pare
 
 AudioEngine::~AudioEngine() { stop(); }
 
+QAudioDevice AudioEngine::configuredDevice() {
+    const QByteArray wanted =
+        QSettings("velo", "velo").value("audio/outputId").toByteArray();
+    if (!wanted.isEmpty())
+        for (const QAudioDevice &d : QMediaDevices::audioOutputs())
+            if (d.id() == wanted) return d;
+    return QMediaDevices::defaultAudioOutput();
+}
+
 void AudioEngine::play(const QString &seqId, double t) {
     stop();
     m_seqId = seqId;
@@ -140,7 +168,7 @@ void AudioEngine::play(const QString &seqId, double t) {
     fmt.setSampleRate(AudioMixer::kRate);
     fmt.setChannelCount(2);
     fmt.setSampleFormat(QAudioFormat::Float);
-    QAudioDevice dev = QMediaDevices::defaultAudioOutput();
+    QAudioDevice dev = configuredDevice();
     if (!dev.isFormatSupported(fmt)) {
         m_playing = true;  // run on the wall clock instead (handled by caller)
         return;

@@ -35,6 +35,9 @@ public:
     AudioEngine(Project *project, QRecursiveMutex *mutex, QObject *parent = nullptr);
     ~AudioEngine() override;
 
+    // The user-selected output from settings ("audio/outputId"), or default.
+    static QAudioDevice configuredDevice();
+
     void play(const QString &seqId, double t);
     void stop();
     bool isPlaying() const { return m_playing; }

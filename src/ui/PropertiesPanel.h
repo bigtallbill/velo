@@ -58,6 +58,8 @@ private:
 
     Document *m_doc;
     QWidget *m_content = nullptr;
+    class QScrollArea *m_scroll = nullptr;
+    class QPlainTextEdit *m_textEdit = nullptr;  // set while a text clip shows
     QList<ParamRow *> m_rows;
     quint64 m_clipId = 0;
     bool m_selfEdit = false;

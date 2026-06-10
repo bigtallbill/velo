@@ -1,4 +1,5 @@
 #include "core/Document.h"
+#include "effects/Effects.h"
 #include "engine/AudioEngine.h"
 #include "engine/Compositor.h"
 #include "engine/Exporter.h"
@@ -9,8 +10,14 @@
 #include <QDir>
 #include <QEventLoop>
 #include <QIcon>
+#include <QFile>
+#include <QFileInfo>
 #include <QProcess>
 #include <cstdio>
+#ifdef Q_OS_UNIX
+#include <pwd.h>
+#include <unistd.h>
+#endif
 
 // Headless engine smoke test: generates media with ffmpeg, builds a project,
 // renders a frame and exports a short file. Run with `velo --selftest`.
@@ -69,6 +76,50 @@ static int selftest() {
                 frame.height());
         return 1;
     }
+    {
+        // vignette must visibly darken the frame corner
+        Sequence *sq = doc.project().sequenceById(seqId);
+        Clip &vclip = sq->videoTracks[0].clips[0];
+        EffectInstance fx = EffectRegistry::instance()->createInstance("vignette");
+        fx.params["amount"] = AnimatedParam(100);
+        vclip.effects.append(fx);
+        QImage after = comp.renderFrame(seqId, 1.0, 0.5);
+        auto luma = [](QRgb p) { return qRed(p) + qGreen(p) + qBlue(p); };
+        const int cornerBefore = luma(frame.pixel(4, 4));
+        const int cornerAfter = luma(after.pixel(4, 4));
+        if (cornerAfter > cornerBefore - 60) {
+            fprintf(stderr, "selftest: vignette had no effect (%d -> %d)\n",
+                    cornerBefore, cornerAfter);
+            return 1;
+        }
+        vclip.effects.clear();
+    }
+    {
+        // ripple delete after a nested sequence must keep linked A/V in sync
+        Document d2;
+        const QString s2 = d2.sequenceFromMedia(d2.importMedia({vid}).first());
+        d2.splitAt(s2, 1.0, false);
+        d2.splitAt(s2, 2.0, false);
+        Sequence *sq = d2.project().sequenceById(s2);
+        // nest the first piece so the audio track has no clip before t=1
+        d2.setSelectedClips({sq->videoTracks[0].clips[0].id,
+                             sq->audioTracks[0].clips[0].id});
+        d2.nestClips(s2, d2.selectedClips());
+        sq = d2.project().sequenceById(s2);
+        // ripple delete the middle piece (video sandwiched, audio is not)
+        QSet<quint64> mid{sq->videoTracks[0].clips[1].id,
+                          sq->audioTracks[0].clips[0].id};
+        d2.deleteClips(s2, mid, true);
+        sq = d2.project().sequenceById(s2);
+        const double vs = sq->videoTracks[0].clips[1].start;
+        const double as = sq->audioTracks[0].clips[0].start;
+        if (std::abs(vs - as) > 1e-6 || std::abs(vs - 1.0) > 1e-6) {
+            fprintf(stderr,
+                    "selftest: ripple desynced A/V (v=%.3f a=%.3f want 1.0)\n",
+                    vs, as);
+            return 1;
+        }
+    }
     AudioMixer mixer(&doc.project(), doc.mutex());
     QVector<float> buf(4800 * 2);
     mixer.mix(seqId, 1.0, 4800, buf.data());
@@ -114,7 +165,29 @@ static int selftest() {
     return 0;
 }
 
+// Running as root (no own audio session): borrow the desktop user's
+// PipeWire/PulseAudio socket so playback isn't silent.
+static void adoptUserAudioSession() {
+#ifdef Q_OS_UNIX
+    if (geteuid() != 0 || !qEnvironmentVariableIsEmpty("PULSE_SERVER")) return;
+    const QDir run("/run/user");
+    for (const QFileInfo &fi :
+         run.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        const QString sock = fi.filePath() + "/pulse/native";
+        if (!QFile::exists(sock)) continue;
+        qputenv("PULSE_SERVER", ("unix:" + sock).toUtf8());
+        if (const passwd *pw = getpwuid(uid_t(fi.fileName().toUInt()))) {
+            const QString cookie =
+                QString(pw->pw_dir) + "/.config/pulse/cookie";
+            if (QFile::exists(cookie)) qputenv("PULSE_COOKIE", cookie.toUtf8());
+        }
+        break;
+    }
+#endif
+}
+
 int main(int argc, char *argv[]) {
+    adoptUserAudioSession();
     QApplication app(argc, argv);
     app.setApplicationName("Velo");
     app.setOrganizationName("velo");

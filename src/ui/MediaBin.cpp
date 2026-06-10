@@ -3,6 +3,7 @@
 #include "ui/Theme.h"
 #include <QDragEnterEvent>
 #include <QFileDialog>
+#include <QKeyEvent>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMimeData>
@@ -18,6 +19,25 @@ QMimeData *MediaListWidget::mimeData(const QList<QListWidgetItem *> &items) cons
     if (!items.isEmpty())
         mime->setData(kMime, items.first()->data(Qt::UserRole).toString().toUtf8());
     return mime;
+}
+
+bool MediaListWidget::event(QEvent *e) {
+    if (e->type() == QEvent::ShortcutOverride) {
+        auto *ke = static_cast<QKeyEvent *>(e);
+        if (ke->key() == Qt::Key_Delete && !selectedItems().isEmpty()) {
+            e->accept();  // keep the global "delete clips" action out of it
+            return true;
+        }
+    }
+    return QListWidget::event(e);
+}
+
+void MediaListWidget::keyPressEvent(QKeyEvent *e) {
+    if (e->key() == Qt::Key_Delete && !selectedItems().isEmpty()) {
+        m_bin->deleteSelectedItems();
+        return;
+    }
+    QListWidget::keyPressEvent(e);
 }
 
 MediaBin::MediaBin(Document *doc, QWidget *parent) : QWidget(parent), m_doc(doc) {
@@ -39,7 +59,7 @@ MediaBin::MediaBin(Document *doc, QWidget *parent) : QWidget(parent), m_doc(doc)
     bar->addWidget(m_search, 1);
     lay->addLayout(bar);
 
-    m_list = new MediaListWidget;
+    m_list = new MediaListWidget(this);
     m_list->setViewMode(QListView::IconMode);
     m_list->setIconSize(QSize(96, 54));
     m_list->setGridSize(QSize(118, 92));
@@ -192,13 +212,17 @@ void MediaBin::contextMenu(const QPoint &pos) {
     QListWidgetItem *it = m_list->itemAt(pos);
     QMenu menu(this);
     QAction *import = menu.addAction(tr("Import…"));
-    QAction *newSeqFrom = nullptr, *remove = nullptr;
+    QAction *newSeqFrom = nullptr, *open = nullptr, *rename = nullptr,
+            *remove = nullptr;
     QString ref = it ? it->data(Qt::UserRole).toString() : QString();
     if (ref.startsWith("media:")) {
         newSeqFrom = menu.addAction(tr("New Sequence from Clip"));
-        remove = menu.addAction(tr("Remove"));
+        rename = menu.addAction(tr("Rename"));
+        remove = menu.addAction(tr("Remove\tDel"));
     } else if (ref.startsWith("sequence:")) {
-        remove = menu.addAction(tr("Open in Timeline"));
+        open = menu.addAction(tr("Open in Timeline"));
+        rename = menu.addAction(tr("Rename"));
+        remove = menu.addAction(tr("Delete Sequence\tDel"));
     }
     QAction *chosen = menu.exec(m_list->mapToGlobal(pos));
     if (!chosen) return;
@@ -206,12 +230,27 @@ void MediaBin::contextMenu(const QPoint &pos) {
         importFilesDialog();
     } else if (newSeqFrom && chosen == newSeqFrom) {
         m_doc->sequenceFromMedia(ref.mid(6));
+    } else if (open && chosen == open) {
+        m_doc->openSequenceTab(ref.mid(9));
+    } else if (rename && chosen == rename) {
+        m_list->editItem(it);
     } else if (remove && chosen == remove) {
-        if (ref.startsWith("media:"))
-            m_doc->removeMedia(ref.mid(6));
-        else
-            m_doc->openSequenceTab(ref.mid(9));
+        removeRef(ref);
     }
+}
+
+void MediaBin::removeRef(const QString &ref) {
+    if (ref.startsWith("media:"))
+        m_doc->removeMedia(ref.mid(6));
+    else if (ref.startsWith("sequence:"))
+        m_doc->removeSequence(ref.mid(9));
+}
+
+void MediaBin::deleteSelectedItems() {
+    QStringList refs;
+    for (QListWidgetItem *it : m_list->selectedItems())
+        refs << it->data(Qt::UserRole).toString();
+    for (const QString &ref : std::as_const(refs)) removeRef(ref);
 }
 
 void MediaBin::dragEnterEvent(QDragEnterEvent *e) {
