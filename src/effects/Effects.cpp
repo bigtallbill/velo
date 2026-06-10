@@ -1,0 +1,255 @@
+#include "effects/Effects.h"
+#include <QtConcurrent>
+#include <cmath>
+
+// ------------------------------------------------------------- pixel helpers
+namespace {
+
+void forEachRow(QImage &img, const std::function<void(int)> &fn) {
+    QVector<int> rows(img.height());
+    std::iota(rows.begin(), rows.end(), 0);
+    QtConcurrent::blockingMap(rows, fn);
+}
+
+// One horizontal+vertical box blur pass with the given radius (ARGB32).
+void boxBlurPass(QImage &img, int radius) {
+    if (radius < 1) return;
+    const int w = img.width(), h = img.height();
+    if (w < 2 || h < 2) return;
+    QImage tmp(img.size(), img.format());
+    const int div = radius * 2 + 1;
+    // horizontal
+    {
+        QVector<int> rows(h);
+        std::iota(rows.begin(), rows.end(), 0);
+        QtConcurrent::blockingMap(rows, [&](int y) {
+            const QRgb *src = reinterpret_cast<const QRgb *>(img.constScanLine(y));
+            QRgb *dst = reinterpret_cast<QRgb *>(tmp.scanLine(y));
+            int a = 0, r = 0, g = 0, b = 0;
+            for (int x = -radius; x <= radius; ++x) {
+                QRgb p = src[qBound(0, x, w - 1)];
+                a += qAlpha(p); r += qRed(p); g += qGreen(p); b += qBlue(p);
+            }
+            for (int x = 0; x < w; ++x) {
+                dst[x] = qRgba(r / div, g / div, b / div, a / div);
+                QRgb pOut = src[qBound(0, x - radius, w - 1)];
+                QRgb pIn = src[qBound(0, x + radius + 1, w - 1)];
+                a += qAlpha(pIn) - qAlpha(pOut);
+                r += qRed(pIn) - qRed(pOut);
+                g += qGreen(pIn) - qGreen(pOut);
+                b += qBlue(pIn) - qBlue(pOut);
+            }
+        });
+    }
+    // vertical
+    {
+        QVector<int> cols(w);
+        std::iota(cols.begin(), cols.end(), 0);
+        const qsizetype stride = tmp.bytesPerLine() / 4;
+        const qsizetype strideO = img.bytesPerLine() / 4;
+        const QRgb *base = reinterpret_cast<const QRgb *>(tmp.constBits());
+        QRgb *out = reinterpret_cast<QRgb *>(img.bits());
+        QtConcurrent::blockingMap(cols, [&](int x) {
+            int a = 0, r = 0, g = 0, b = 0;
+            for (int y = -radius; y <= radius; ++y) {
+                QRgb p = base[qBound(0, y, h - 1) * stride + x];
+                a += qAlpha(p); r += qRed(p); g += qGreen(p); b += qBlue(p);
+            }
+            for (int y = 0; y < h; ++y) {
+                out[y * strideO + x] = qRgba(r / div, g / div, b / div, a / div);
+                QRgb pOut = base[qBound(0, y - radius, h - 1) * stride + x];
+                QRgb pIn = base[qBound(0, y + radius + 1, h - 1) * stride + x];
+                a += qAlpha(pIn) - qAlpha(pOut);
+                r += qRed(pIn) - qRed(pOut);
+                g += qGreen(pIn) - qGreen(pOut);
+                b += qBlue(pIn) - qBlue(pOut);
+            }
+        });
+    }
+}
+
+void gaussianBlur(QImage &img, double radius) {
+    // 3 box passes approximate a gaussian
+    int r = qMax(1, int(radius / 2));
+    boxBlurPass(img, r);
+    boxBlurPass(img, r);
+    boxBlurPass(img, qMax(1, int(radius - 2 * r)));
+}
+
+void colorCorrect(QImage &img, double brightness, double contrast,
+                  double saturation, double temperature) {
+    // brightness -100..100, contrast -100..100, saturation 0..200, temp -100..100
+    uchar lut[256], lutR[256], lutB[256];
+    const double b = brightness * 1.275;            // -127..127
+    const double c = (contrast + 100.0) / 100.0;    // 0..2
+    const double t = temperature * 0.45;
+    for (int i = 0; i < 256; ++i) {
+        double v = (i - 127.5) * c + 127.5 + b;
+        lut[i] = uchar(qBound(0.0, v, 255.0));
+        lutR[i] = uchar(qBound(0.0, v + t, 255.0));
+        lutB[i] = uchar(qBound(0.0, v - t, 255.0));
+    }
+    const double sat = saturation / 100.0;
+    const bool doSat = std::abs(sat - 1.0) > 1e-3;
+    forEachRow(img, [&](int y) {
+        QRgb *px = reinterpret_cast<QRgb *>(img.scanLine(y));
+        const int w = img.width();
+        for (int x = 0; x < w; ++x) {
+            int r = lutR[qRed(px[x])], g = lut[qGreen(px[x])], bl = lutB[qBlue(px[x])];
+            if (doSat) {
+                int luma = (r * 54 + g * 183 + bl * 19) >> 8;
+                r = qBound(0, int(luma + (r - luma) * sat), 255);
+                g = qBound(0, int(luma + (g - luma) * sat), 255);
+                bl = qBound(0, int(luma + (bl - luma) * sat), 255);
+            }
+            px[x] = qRgba(r, g, bl, qAlpha(px[x]));
+        }
+    });
+}
+
+void sharpen(QImage &img, double amount) {
+    if (amount <= 0) return;
+    QImage blurred = img.copy();
+    boxBlurPass(blurred, 1);
+    const double k = amount / 100.0 * 1.5;
+    forEachRow(img, [&](int y) {
+        QRgb *px = reinterpret_cast<QRgb *>(img.scanLine(y));
+        const QRgb *bl = reinterpret_cast<const QRgb *>(blurred.constScanLine(y));
+        const int w = img.width();
+        for (int x = 0; x < w; ++x) {
+            int r = qBound(0, int(qRed(px[x]) + (qRed(px[x]) - qRed(bl[x])) * k), 255);
+            int g = qBound(0, int(qGreen(px[x]) + (qGreen(px[x]) - qGreen(bl[x])) * k), 255);
+            int b = qBound(0, int(qBlue(px[x]) + (qBlue(px[x]) - qBlue(bl[x])) * k), 255);
+            px[x] = qRgba(r, g, b, qAlpha(px[x]));
+        }
+    });
+}
+
+void vignette(QImage &img, double amount) {
+    if (amount <= 0) return;
+    const double cx = img.width() / 2.0, cy = img.height() / 2.0;
+    const double maxD = std::sqrt(cx * cx + cy * cy);
+    const double k = amount / 100.0;
+    forEachRow(img, [&](int y) {
+        QRgb *px = reinterpret_cast<QRgb *>(img.scanLine(y));
+        const int w = img.width();
+        for (int x = 0; x < w; ++x) {
+            double d = std::sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) / maxD;
+            double f = 1.0 - k * d * d * 1.4;
+            f = qBound(0.0, f, 1.0);
+            px[x] = qRgba(int(qRed(px[x]) * f), int(qGreen(px[x]) * f),
+                          int(qBlue(px[x]) * f), qAlpha(px[x]));
+        }
+    });
+}
+
+void blackWhite(QImage &img, double mix) {
+    const double m = qBound(0.0, mix / 100.0, 1.0);
+    forEachRow(img, [&](int y) {
+        QRgb *px = reinterpret_cast<QRgb *>(img.scanLine(y));
+        const int w = img.width();
+        for (int x = 0; x < w; ++x) {
+            int luma = (qRed(px[x]) * 54 + qGreen(px[x]) * 183 + qBlue(px[x]) * 19) >> 8;
+            int r = int(qRed(px[x]) * (1 - m) + luma * m);
+            int g = int(qGreen(px[x]) * (1 - m) + luma * m);
+            int b = int(qBlue(px[x]) * (1 - m) + luma * m);
+            px[x] = qRgba(r, g, b, qAlpha(px[x]));
+        }
+    });
+}
+
+}  // namespace
+
+// ------------------------------------------------------------ EffectRegistry
+EffectRegistry *EffectRegistry::instance() {
+    static EffectRegistry r;
+    return &r;
+}
+
+EffectInstance EffectRegistry::createInstance(const QString &id) const {
+    EffectInstance inst;
+    inst.effectId = id;
+    if (const EffectDesc *d = byId(id))
+        for (const auto &p : d->params)
+            inst.params[p.id] = AnimatedParam(p.def);
+    return inst;
+}
+
+EffectRegistry::EffectRegistry() {
+    // ---- video effects -----------------------------------------------------
+    registerEffect({
+        "gaussian_blur", "Gaussian Blur", "Blur",
+        {{"radius", "Radius", 0, 200, 10, 1, 0}},
+        [](QImage &img, const QMap<QString, double> &p, double scale) {
+            double r = p.value("radius") * scale;
+            if (r >= 0.5) gaussianBlur(img, r);
+        }});
+    registerEffect({
+        "color_correction", "Color Correction", "Color",
+        {{"brightness", "Brightness", -100, 100, 0, 1, 0},
+         {"contrast", "Contrast", -100, 100, 0, 1, 0},
+         {"saturation", "Saturation", 0, 200, 100, 1, 0},
+         {"temperature", "Temperature", -100, 100, 0, 1, 0}},
+        [](QImage &img, const QMap<QString, double> &p, double) {
+            colorCorrect(img, p.value("brightness"), p.value("contrast"),
+                         p.value("saturation", 100), p.value("temperature"));
+        }});
+    registerEffect({
+        "sharpen", "Sharpen", "Color",
+        {{"amount", "Amount", 0, 300, 50, 1, 0}},
+        [](QImage &img, const QMap<QString, double> &p, double) {
+            sharpen(img, p.value("amount"));
+        }});
+    registerEffect({
+        "black_white", "Black & White", "Color",
+        {{"mix", "Mix", 0, 100, 100, 1, 0}},
+        [](QImage &img, const QMap<QString, double> &p, double) {
+            blackWhite(img, p.value("mix", 100));
+        }});
+    registerEffect({
+        "vignette", "Vignette", "Stylize",
+        {{"amount", "Amount", 0, 100, 40, 1, 0}},
+        [](QImage &img, const QMap<QString, double> &p, double) {
+            vignette(img, p.value("amount"));
+        }});
+    registerEffect({
+        "flip", "Flip", "Stylize",
+        {{"horizontal", "Horizontal", 0, 1, 1, 1, 0},
+         {"vertical", "Vertical", 0, 1, 0, 1, 0}},
+        [](QImage &img, const QMap<QString, double> &p, double) {
+            bool h = p.value("horizontal", 1) > 0.5, v = p.value("vertical") > 0.5;
+            if (h || v) img = img.flipped((h ? Qt::Horizontal : Qt::Orientations()) |
+                                          (v ? Qt::Vertical : Qt::Orientations()));
+        }});
+
+    // ---- audio effects -----------------------------------------------------
+    {
+        EffectDesc gain{"gain", "Gain", "Audio",
+                        {{"db", "Gain (dB)", -48, 24, 0, 0.5, 1}},
+                        nullptr};
+        gain.isAudio = true;
+        registerEffect(gain);
+    }
+
+    // ---- transitions (dragged onto clip edges) ------------------------------
+    auto trans = [this](const QString &id, const QString &name, TransitionType t) {
+        EffectDesc d{id, name, "Transitions", {}, nullptr};
+        d.isTransition = true;
+        d.transitionType = t;
+        registerEffect(d);
+    };
+    trans("t_dissolve", "Cross Dissolve", TransitionType::CrossDissolve);
+    trans("t_fade", "Fade (in/out)", TransitionType::Fade);
+    trans("t_dip_black", "Dip to Black", TransitionType::DipToBlack);
+}
+
+double audioEffectGain(const Clip &clip, double localT) {
+    double db = 0;
+    for (const auto &e : clip.effects) {
+        if (!e.enabled) continue;
+        const EffectDesc *d = EffectRegistry::instance()->byId(e.effectId);
+        if (d && d->isAudio && e.effectId == "gain")
+            db += e.params.value("db").at(localT);
+    }
+    return std::pow(10.0, db / 20.0);
+}

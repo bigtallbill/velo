@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Velo
+GenericName=Video Editor
+Comment=Fast, friendly non-linear video editor
+Exec=velo %f
+Icon=velo
+Terminal=false
+Categories=AudioVideo;Video;AudioVideoEditing;Qt;
+MimeType=application/x-velo-project;

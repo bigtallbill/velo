@@ -1,0 +1,1291 @@
+#include "ui/TimelineWidget.h"
+#include "effects/Effects.h"
+#include "media/MediaCache.h"
+#include "ui/Theme.h"
+#include <QContextMenuEvent>
+#include <QHBoxLayout>
+#include <QInputDialog>
+#include <QMenu>
+#include <QMimeData>
+#include <QPainter>
+#include <QPainterPath>
+#include <QScrollBar>
+#include <QTabBar>
+#include <QToolButton>
+#include <QVBoxLayout>
+
+static const char *kItemMime = "application/x-velo-item";
+static const char *kEffectMime = "application/x-velo-effect";
+
+// ---------------------------------------------------------------- TimelinePanel
+TimelinePanel::TimelinePanel(Document *doc, QWidget *parent)
+    : QWidget(parent), m_doc(doc) {
+    auto *lay = new QVBoxLayout(this);
+    lay->setContentsMargins(0, 0, 0, 0);
+    lay->setSpacing(0);
+
+    auto *top = new QHBoxLayout;
+    top->setContentsMargins(4, 2, 4, 0);
+    m_tabs = new QTabBar;
+    m_tabs->setTabsClosable(true);
+    m_tabs->setMovable(true);
+    m_tabs->setExpanding(false);
+    m_tabs->setDrawBase(false);
+    m_tabs->setUsesScrollButtons(true);
+    top->addWidget(m_tabs, 1);
+
+    auto mkTool = [&](const QString &text, const QString &tip, bool checkable) {
+        auto *b = new QToolButton;
+        b->setText(text);
+        b->setToolTip(tip);
+        b->setCheckable(checkable);
+        b->setAutoRaise(true);
+        top->addWidget(b);
+        return b;
+    };
+    m_selectBtn = mkTool("⬉", tr("Selection tool (V)"), true);
+    m_razorBtn = mkTool("✂", tr("Razor tool (C) — click a clip to cut it"), true);
+    m_magnetBtn = mkTool("🧲", tr("Magnetic snapping (N) — hold Alt to bypass"), true);
+    m_selectBtn->setChecked(true);
+    m_magnetBtn->setChecked(true);
+    auto *zoomOut = mkTool("−", tr("Zoom out (-)"), false);
+    auto *zoomIn = mkTool("+", tr("Zoom in (+)"), false);
+    auto *zoomFit = mkTool("↔", tr("Zoom to fit (\\)"), false);
+    lay->addLayout(top);
+
+    m_view = new TimelineView(doc);
+    lay->addWidget(m_view, 1);
+
+    connect(m_selectBtn, &QToolButton::clicked, this, [this] { setRazorTool(false); });
+    connect(m_razorBtn, &QToolButton::clicked, this, [this] { setRazorTool(true); });
+    connect(m_magnetBtn, &QToolButton::toggled, m_view, &TimelineView::setMagnet);
+    connect(zoomIn, &QToolButton::clicked, this, [this] { m_view->zoom(1.3); });
+    connect(zoomOut, &QToolButton::clicked, this, [this] { m_view->zoom(1 / 1.3); });
+    connect(zoomFit, &QToolButton::clicked, m_view, &TimelineView::zoomToFit);
+    connect(m_view, &TimelineView::toolChanged, this, [this] {
+        m_razorBtn->setChecked(m_view->tool() == TimelineView::Tool::Razor);
+        m_selectBtn->setChecked(m_view->tool() == TimelineView::Tool::Select);
+    });
+
+    connect(m_tabs, &QTabBar::currentChanged, this, [this](int idx) {
+        if (m_updatingTabs || idx < 0) return;
+        m_doc->setActiveSequence(m_tabs->tabData(idx).toString());
+    });
+    connect(m_tabs, &QTabBar::tabCloseRequested, this, [this](int idx) {
+        m_doc->closeSequenceTab(m_tabs->tabData(idx).toString());
+    });
+    connect(doc, &Document::sequenceListChanged, this, &TimelinePanel::rebuildTabs);
+    connect(doc, &Document::projectLoaded, this, &TimelinePanel::rebuildTabs);
+    connect(doc, &Document::activeSequenceChanged, this, [this](const QString &id) {
+        for (int i = 0; i < m_tabs->count(); ++i)
+            if (m_tabs->tabData(i).toString() == id) {
+                m_updatingTabs = true;
+                m_tabs->setCurrentIndex(i);
+                m_updatingTabs = false;
+            }
+        m_view->update();
+    });
+    rebuildTabs();
+}
+
+bool TimelinePanel::magnetEnabled() const { return m_view->magnet(); }
+
+void TimelinePanel::toggleMagnet() {
+    m_magnetBtn->setChecked(!m_magnetBtn->isChecked());
+}
+
+void TimelinePanel::setRazorTool(bool on) {
+    m_view->setTool(on ? TimelineView::Tool::Razor : TimelineView::Tool::Select);
+}
+
+void TimelinePanel::rebuildTabs() {
+    m_updatingTabs = true;
+    while (m_tabs->count()) m_tabs->removeTab(0);
+    for (const QString &id : m_doc->project().openTabs) {
+        const Sequence *s = m_doc->project().sequenceByIdConst(id);
+        if (!s) continue;
+        int idx = m_tabs->addTab(s->name);
+        m_tabs->setTabData(idx, id);
+        if (id == m_doc->project().activeSequence) m_tabs->setCurrentIndex(idx);
+    }
+    m_updatingTabs = false;
+    m_view->update();
+}
+
+// ----------------------------------------------------------------- TimelineView
+TimelineView::TimelineView(Document *doc, QWidget *parent)
+    : QWidget(parent), m_doc(doc) {
+    setMouseTracking(true);
+    setAcceptDrops(true);
+    setFocusPolicy(Qt::ClickFocus);
+    setMinimumHeight(180);
+    m_hbar = new QScrollBar(Qt::Horizontal, this);
+    m_vbar = new QScrollBar(Qt::Vertical, this);
+    connect(m_hbar, &QScrollBar::valueChanged, this, [this](int v) {
+        m_scrollT = v / 1000.0;
+        update();
+    });
+    connect(m_vbar, &QScrollBar::valueChanged, this, [this](int v) {
+        m_scrollY = v;
+        update();
+    });
+    connect(doc, &Document::sequenceChanged, this, [this](const QString &id) {
+        if (seq() && id == seq()->id) {
+            updateScrollbars();
+            update();
+        }
+    });
+    connect(doc, &Document::playheadChanged, this, [this](const QString &id, double) {
+        if (seq() && id == seq()->id) {
+            ensurePlayheadVisible();
+            update();
+        }
+    });
+    connect(doc, &Document::selectionChanged, this, [this] { update(); });
+    connect(doc, &Document::activeSequenceChanged, this, [this] {
+        updateScrollbars();
+        update();
+    });
+    connect(doc, &Document::projectLoaded, this, [this] {
+        m_scrollT = 0;
+        m_scrollY = 0;
+        updateScrollbars();
+        update();
+    });
+    connect(WaveformService::instance(), &WaveformService::peaksReady, this,
+            [this](const QString &) { update(); });
+}
+
+Sequence *TimelineView::seq() const { return m_doc->activeSequence(); }
+
+Track *TimelineView::trackFor(const Row &row) const {
+    Sequence *s = seq();
+    return s ? s->track(row.type, row.index) : nullptr;
+}
+
+QList<TimelineView::Row> TimelineView::rowLayout() const {
+    QList<Row> rows;
+    Sequence *s = seq();
+    if (!s) return rows;
+    int y = kRulerH + kGap - m_scrollY;
+    for (int i = s->videoTracks.size() - 1; i >= 0; --i) {  // Vn on top
+        rows.append({TrackType::Video, i, y, kVideoH});
+        y += kVideoH + kGap;
+    }
+    y += 4;  // visual divider between video and audio
+    for (int i = 0; i < s->audioTracks.size(); ++i) {
+        rows.append({TrackType::Audio, i, y, kAudioH});
+        y += kAudioH + kGap;
+    }
+    return rows;
+}
+
+const TimelineView::Row *TimelineView::rowAt(int y, QList<Row> &rows) const {
+    for (const Row &r : rows)
+        if (y >= r.y && y < r.y + r.h) return &r;
+    return nullptr;
+}
+
+const TimelineView::Row *TimelineView::rowFor(TrackType type, int idx,
+                                              QList<Row> &rows) const {
+    for (const Row &r : rows)
+        if (r.type == type && r.index == idx) return &r;
+    return nullptr;
+}
+
+double TimelineView::timeAt(int x) const {
+    return m_scrollT + double(x - kHeaderW) / m_pxPerSec;
+}
+int TimelineView::xAt(double t) const {
+    return kHeaderW + int((t - m_scrollT) * m_pxPerSec);
+}
+QRectF TimelineView::clipRect(const Row &row, const Clip &c) const {
+    return QRectF(xAt(c.start), row.y + 1, c.duration * m_pxPerSec, row.h - 2);
+}
+
+// ---------------------------------------------------------------------- paint
+void TimelineView::paintEvent(QPaintEvent *) {
+    QPainter p(this);
+    p.fillRect(rect(), Theme::panelDark());
+    Sequence *s = seq();
+    if (!s) {
+        p.setPen(Theme::textDim());
+        p.drawText(rect(), Qt::AlignCenter,
+                   tr("No sequence open.\nFile ▸ New Sequence, or drag media here."));
+        return;
+    }
+    QList<Row> rows = rowLayout();
+    const double playT = m_doc->playhead(s->id);
+    const QSet<quint64> &sel = m_doc->selectedClips();
+
+    // ---- track lanes + headers ---------------------------------------------
+    for (const Row &row : rows) {
+        Track *track = const_cast<TimelineView *>(this)->trackFor(row);
+        if (!track) continue;
+        QRect lane(kHeaderW, row.y, width() - kHeaderW, row.h);
+        p.fillRect(lane, row.type == TrackType::Video ? QColor(0x26, 0x28, 0x2d)
+                                                      : QColor(0x23, 0x29, 0x26));
+        // header
+        QRect head(0, row.y, kHeaderW, row.h);
+        const bool trackSel = m_doc->trackSelected() &&
+                              m_doc->selectedTrackType() == row.type &&
+                              m_doc->selectedTrackIndex() == row.index;
+        p.fillRect(head, trackSel ? QColor(0x33, 0x3a, 0x45) : Theme::panel());
+        p.setPen(Theme::border());
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(head.adjusted(0, 0, -1, -1));
+        p.setPen(track->muted ? Theme::textDim() : Qt::white);
+        p.drawText(head.adjusted(8, 0, -60, 0), Qt::AlignVCenter, track->name);
+        // mute/hide + lock buttons
+        for (int b = 0; b < 2; ++b) {
+            QRectF br = headerButtonRect(row, b);
+            bool on = b == 0 ? track->muted : track->locked;
+            p.setPen(Qt::NoPen);
+            p.setBrush(on ? QColor(0xc8, 0x60, 0x46) : QColor(0x3a, 0x3d, 0x42));
+            p.drawRoundedRect(br, 3, 3);
+            p.setPen(Qt::white);
+            p.drawText(br, Qt::AlignCenter,
+                       b == 1 ? "🔒" : (row.type == TrackType::Video ? "👁" : "M"));
+        }
+        if (track->locked) {
+            p.fillRect(lane, QColor(255, 255, 255, 14));
+        }
+
+        // ---- clips ------------------------------------------------------------
+        for (const Clip &c : track->clips) {
+            QRectF r = clipRect(row, c);
+            if (r.right() < kHeaderW || r.left() > width()) continue;
+            const bool isSel = sel.contains(c.id);
+            const bool ghost = m_drag == Drag::MoveClips && m_dragStarted &&
+                               m_dragIds.contains(c.id);
+            QColor col = Theme::videoClip();
+            if (c.type == ClipType::Audio) col = Theme::audioClip();
+            else if (c.type == ClipType::Text) col = Theme::textClip();
+            else if (c.type == ClipType::Nested) col = Theme::nestedClip();
+            else if (c.type == ClipType::Image) col = QColor(0x3e, 0x8e, 0x8e);
+            if (!c.enabled) col = col.darker(190);
+            if (track->muted) col = col.darker(140);
+            p.setPen(Qt::NoPen);
+            p.setBrush(ghost ? QColor(col.red(), col.green(), col.blue(), 70) : col);
+            p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3);
+
+            // waveform
+            if (c.type == ClipType::Audio && r.width() > 4 && !ghost) {
+                const MediaItem *m = m_doc->project().mediaByIdConst(c.mediaId);
+                if (m) {
+                    QVector<float> peaks =
+                        WaveformService::instance()->peaks(m->path, m->duration);
+                    if (!peaks.isEmpty()) {
+                        p.setPen(QColor(255, 255, 255, 90));
+                        const double midY = r.center().y();
+                        const double half = r.height() * 0.42;
+                        const int x0 = qMax(int(r.left()), kHeaderW);
+                        const int x1 = qMin(int(r.right()), width());
+                        for (int x = x0; x < x1; ++x) {
+                            const double srcT = c.sourceTime(timeAt(x));
+                            const int idx = int(srcT * 100);
+                            if (idx < 0 || idx >= peaks.size()) continue;
+                            const double a = peaks[idx] * half;
+                            p.drawLine(QPointF(x, midY - a), QPointF(x, midY + a));
+                        }
+                    }
+                }
+            }
+
+            // transitions (wedges at clip edges)
+            auto wedge = [&](bool atStart, const Transition &trz) {
+                if (trz.type == TransitionType::None) return;
+                const double w = qMin(trz.duration * m_pxPerSec, r.width());
+                QPainterPath path;
+                if (atStart) {
+                    path.moveTo(r.left(), r.bottom());
+                    path.lineTo(r.left() + w, r.top());
+                    path.lineTo(r.left(), r.top());
+                } else {
+                    path.moveTo(r.right(), r.bottom());
+                    path.lineTo(r.right() - w, r.top());
+                    path.lineTo(r.right(), r.top());
+                }
+                path.closeSubpath();
+                p.fillPath(path, QColor(255, 255, 255, 60));
+                p.setPen(QPen(QColor(255, 255, 255, 140), 1));
+                p.drawLine(atStart ? QPointF(r.left() + w, r.top())
+                                   : QPointF(r.right() - w, r.top()),
+                           atStart ? QPointF(r.left() + w, r.bottom())
+                                   : QPointF(r.right() - w, r.bottom()));
+            };
+            wedge(true, c.transIn);
+            wedge(false, c.transOut);
+
+            // label
+            p.setPen(isSel ? Qt::white : QColor(255, 255, 255, 200));
+            QString label = c.name;
+            if (std::abs(c.speed - 1.0) > 1e-4)
+                label += QString("  ×%1%").arg(qRound(c.speed * 100));
+            if (c.type == ClipType::Nested) label = "▦ " + label;
+            p.drawText(r.adjusted(6, 2, -4, -2),
+                       Qt::AlignTop | Qt::AlignLeft | Qt::TextSingleLine,
+                       p.fontMetrics().elidedText(label, Qt::ElideRight,
+                                                  int(r.width()) - 10));
+
+            // volume rubber band on audio clips
+            if (c.type == ClipType::Audio && r.width() > 8) {
+                p.setPen(QPen(QColor(0xff, 0xd5, 0x4f, 200), 1.4));
+                const double h = r.height() - 4;
+                auto volY = [&](double local) {
+                    double v = qBound(0.0, c.volume.at(local), 2.0);
+                    return r.bottom() - 2 - (v / 2.0) * h;
+                };
+                if (c.volume.animated()) {
+                    QPainterPath vp;
+                    bool first = true;
+                    const int x0 = qMax(int(r.left()), kHeaderW);
+                    const int x1 = qMin(int(r.right()), width());
+                    for (int x = x0; x <= x1; x += 2) {
+                        const double local = c.clipLocal(timeAt(x));
+                        if (first) {
+                            vp.moveTo(x, volY(local));
+                            first = false;
+                        } else {
+                            vp.lineTo(x, volY(local));
+                        }
+                    }
+                    p.drawPath(vp);
+                    p.setBrush(QColor(0xff, 0xd5, 0x4f));
+                    p.setPen(Qt::NoPen);
+                    for (auto it = c.volume.keys().begin();
+                         it != c.volume.keys().end(); ++it) {
+                        const double x = xAt(c.start + it.key());
+                        if (x < r.left() || x > r.right()) continue;
+                        p.drawEllipse(QPointF(x, volY(it.key())), 3.5, 3.5);
+                    }
+                } else {
+                    const double y = volY(0);
+                    p.drawLine(QPointF(qMax(r.left(), double(kHeaderW)), y),
+                               QPointF(r.right(), y));
+                }
+            }
+
+            if (isSel && !ghost) {
+                p.setPen(QPen(Qt::white, 1.6));
+                p.setBrush(Qt::NoBrush);
+                p.drawRoundedRect(r.adjusted(0.8, 0.8, -0.8, -0.8), 3, 3);
+            }
+        }
+    }
+
+    // ---- move ghost (drag preview) -------------------------------------------
+    if (m_drag == Drag::MoveClips && m_dragStarted) {
+        p.setPen(QPen(Theme::accent(), 1.4, Qt::DashLine));
+        p.setBrush(QColor(0x4f, 0x9c, 0xf5, 60));
+        const auto grabType = m_dragTrack.value(m_activeClip).first;
+        for (auto it = m_dragOrig.begin(); it != m_dragOrig.end(); ++it) {
+            auto src = m_dragTrack.value(it.key());
+            int newIdx = src.second;
+            // vertical move applies within the grabbed clip's track type
+            if (src.first == grabType)
+                newIdx = qMax(0, src.second + m_moveTrackDelta);
+            const Row *row = rowFor(src.first, newIdx, rows);
+            double y = row ? row->y : (newIdx >= 0 ? kRulerH : 0);
+            double h = row ? row->h
+                           : (src.first == TrackType::Video ? kVideoH : kAudioH);
+            if (!row && src.first == TrackType::Video && !rows.isEmpty())
+                y = rows.first().y - (kVideoH + kGap);  // new track above
+            if (!row && src.first == TrackType::Audio && !rows.isEmpty())
+                y = rows.last().y + rows.last().h + kGap;  // new track below
+            const Clip &orig = it.value();
+            QRectF r(xAt(orig.start + m_moveDelta), y + 1,
+                     orig.duration * m_pxPerSec, h - 2);
+            p.drawRoundedRect(r, 3, 3);
+        }
+    }
+
+    // ---- drop ghost -----------------------------------------------------------
+    if (!m_dropRef.isEmpty() && m_dropT >= 0) {
+        const Row *row = rowFor(m_dropType, m_dropTrack, rows);
+        if (row) {
+            p.setPen(QPen(Theme::accent(), 1.4, Qt::DashLine));
+            p.setBrush(QColor(0x4f, 0x9c, 0xf5, 60));
+            p.drawRoundedRect(QRectF(xAt(m_dropT), row->y + 1,
+                                     m_dropDur * m_pxPerSec, row->h - 2),
+                              3, 3);
+        }
+    }
+
+    // ---- rubber band -----------------------------------------------------------
+    if (m_drag == Drag::RubberBand && m_dragStarted) {
+        p.setPen(QPen(Theme::accent(), 1));
+        p.setBrush(QColor(0x4f, 0x9c, 0xf5, 40));
+        p.drawRect(m_rubber);
+    }
+
+    // ---- ruler -------------------------------------------------------------------
+    p.fillRect(QRect(0, 0, width(), kRulerH), Theme::panel());
+    p.setPen(Theme::border());
+    p.drawLine(0, kRulerH, width(), kRulerH);
+    const double tickStep = [&] {
+        const double steps[] = {0.04, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120,
+                                300, 600};
+        for (double st : steps)
+            if (st * m_pxPerSec >= 70) return st;
+        return 600.0;
+    }();
+    p.setPen(Theme::textDim());
+    QFont f = p.font();
+    f.setPixelSize(10);
+    p.setFont(f);
+    double t0 = std::floor(qMax(0.0, m_scrollT) / tickStep) * tickStep;
+    for (double t = t0;; t += tickStep) {
+        int x = xAt(t);
+        if (x > width()) break;
+        if (x < kHeaderW) continue;
+        p.drawLine(x, kRulerH - 7, x, kRulerH);
+        p.drawText(x + 3, kRulerH - 9, formatTimecode(t, s->fps));
+        // minor ticks
+        for (int m = 1; m < 5; ++m) {
+            int mx = xAt(t + tickStep * m / 5.0);
+            if (mx >= kHeaderW && mx <= width()) p.drawLine(mx, kRulerH - 3, mx, kRulerH);
+        }
+    }
+    p.fillRect(QRect(0, 0, kHeaderW, kRulerH), Theme::panel());
+    p.setPen(Theme::textDim());
+    p.drawText(QRect(8, 0, kHeaderW - 12, kRulerH), Qt::AlignVCenter,
+               formatTimecode(playT, s->fps));
+
+    // ---- snap indicator -------------------------------------------------------------
+    if (m_snapIndicator >= 0 && m_drag != Drag::None) {
+        const int x = xAt(m_snapIndicator);
+        p.setPen(QPen(QColor(0xff, 0xd5, 0x4f), 1));
+        p.drawLine(x, kRulerH, x, height());
+    }
+
+    // ---- playhead ---------------------------------------------------------------------
+    const int px = xAt(playT);
+    if (px >= kHeaderW - 8) {
+        p.setPen(QPen(QColor(0x57, 0xa0, 0xff), 1.6));
+        p.drawLine(px, 0, px, height());
+        QPainterPath tri;
+        tri.moveTo(px - 6, 0);
+        tri.lineTo(px + 6, 0);
+        tri.lineTo(px, 9);
+        tri.closeSubpath();
+        p.fillPath(tri, QColor(0x57, 0xa0, 0xff));
+    }
+}
+
+QRectF TimelineView::headerButtonRect(const Row &row, int which) const {
+    const double x = kHeaderW - 28 - which * 26;
+    return QRectF(x, row.y + row.h / 2.0 - 9, 22, 18);
+}
+
+// ------------------------------------------------------------------- hit testing
+TimelineView::Hit TimelineView::hitTest(const QPointF &pos) {
+    Hit hit;
+    Sequence *s = seq();
+    if (!s || pos.y() < kRulerH) return hit;
+    QList<Row> rows = rowLayout();
+    const Row *row = rowAt(int(pos.y()), rows);
+    if (!row) return hit;
+    Track *track = trackFor(*row);
+    if (!track) return hit;
+    hit.track = track;
+    hit.type = row->type;
+    hit.trackIdx = row->index;
+    for (Clip &c : track->clips) {
+        QRectF r = clipRect(*row, c);
+        if (!r.adjusted(-1, 0, 1, 0).contains(pos)) continue;
+        hit.clip = &c;
+        hit.rect = r;
+        const double edge = qMin(7.0, r.width() / 3.0);
+        // transition inner-edge handles take priority
+        if (c.transIn.type != TransitionType::None) {
+            const double ix = r.left() + c.transIn.duration * m_pxPerSec;
+            if (std::abs(pos.x() - ix) < 5 && pos.y() < r.top() + r.height() / 2) {
+                hit.transIn = true;
+                return hit;
+            }
+        }
+        if (c.transOut.type != TransitionType::None) {
+            const double ox = r.right() - c.transOut.duration * m_pxPerSec;
+            if (std::abs(pos.x() - ox) < 5 && pos.y() < r.top() + r.height() / 2) {
+                hit.transOut = true;
+                return hit;
+            }
+        }
+        if (pos.x() - r.left() < edge) hit.leftEdge = true;
+        else if (r.right() - pos.x() < edge) hit.rightEdge = true;
+        // audio volume line / keyframes
+        if (c.type == ClipType::Audio && !hit.leftEdge && !hit.rightEdge) {
+            const double h = r.height() - 4;
+            auto volY = [&](double local) {
+                return r.bottom() - 2 -
+                       (qBound(0.0, c.volume.at(local), 2.0) / 2.0) * h;
+            };
+            if (c.volume.animated()) {
+                for (auto it = c.volume.keys().begin(); it != c.volume.keys().end();
+                     ++it) {
+                    const double x = xAt(c.start + it.key());
+                    if (QLineF(pos, QPointF(x, volY(it.key()))).length() < 6) {
+                        hit.volumeKeyT = it.key();
+                        return hit;
+                    }
+                }
+            }
+            const double local = c.clipLocal(timeAt(int(pos.x())));
+            if (std::abs(pos.y() - volY(local)) < 5) hit.volumeLine = true;
+        }
+        return hit;
+    }
+    return hit;
+}
+
+double TimelineView::snapTime(double t, const QSet<quint64> &ignore, bool force) {
+    m_snapIndicator = -1;
+    Sequence *s = seq();
+    if (!s) return t;
+    const bool noSnap = !force && (!m_magnet ||
+                                   QGuiApplication::keyboardModifiers() &
+                                       Qt::AltModifier);
+    if (noSnap) return s->snapFrame(t);
+    const double thr = 9.0 / m_pxPerSec;
+    double best = t, bestD = thr;
+    auto consider = [&](double cand) {
+        const double d = std::abs(cand - t);
+        if (d < bestD) {
+            bestD = d;
+            best = cand;
+        }
+    };
+    consider(0.0);
+    consider(m_doc->playhead(s->id));
+    for (const auto *list : {&s->videoTracks, &s->audioTracks})
+        for (const auto &track : *list)
+            for (const auto &c : track.clips) {
+                if (ignore.contains(c.id)) continue;
+                consider(c.start);
+                consider(c.end());
+            }
+    if (bestD < thr) {
+        m_snapIndicator = best;
+        return best;
+    }
+    return s->snapFrame(t);
+}
+
+// ----------------------------------------------------------------- mouse events
+void TimelineView::mousePressEvent(QMouseEvent *e) {
+    Sequence *s = seq();
+    if (!s) return;
+    m_pressPos = e->position();
+    m_dragStarted = false;
+    m_snapIndicator = -1;
+
+    if (e->button() != Qt::LeftButton) return;
+
+    // ruler: scrub
+    if (e->position().y() < kRulerH && e->position().x() >= kHeaderW) {
+        m_drag = Drag::Playhead;
+        m_doc->setPlayhead(s->id, qMax(0.0, s->snapFrame(timeAt(int(e->position().x())))));
+        return;
+    }
+
+    QList<Row> rows = rowLayout();
+    // header
+    if (e->position().x() < kHeaderW) {
+        if (const Row *row = rowAt(int(e->position().y()), rows))
+            applyHeaderClick(*row, e->position(), false);
+        return;
+    }
+
+    Hit hit = hitTest(e->position());
+    if (!hit.clip) {
+        // empty area: rubber-band selection
+        if (hit.track) m_doc->selectTrack(hit.type, hit.trackIdx);
+        m_drag = Drag::RubberBand;
+        m_rubber = QRectF(m_pressPos, m_pressPos);
+        return;
+    }
+    if (hit.track && hit.track->locked) return;
+
+    // razor tool: cut clip (+ linked partner) at the click position
+    if (m_tool == Tool::Razor) {
+        const double t = s->snapFrame(timeAt(int(e->position().x())));
+        QSet<quint64> prev = m_doc->selectedClips();
+        m_doc->setSelectedClips(
+            m_doc->withLinked(s->id, QSet<quint64>{hit.clip->id}));
+        m_doc->splitAt(s->id, t, true);
+        m_doc->setSelectedClips(prev);
+        return;
+    }
+
+    m_activeClip = hit.clip->id;
+
+    if (hit.transIn || hit.transOut) {
+        m_doc->beginUndoStep();
+        m_drag = hit.transIn ? Drag::TransIn : Drag::TransOut;
+        return;
+    }
+    if (hit.volumeKeyT >= 0) {
+        m_doc->beginUndoStep();
+        m_drag = Drag::VolumeKey;
+        m_volKeyT = hit.volumeKeyT;
+        return;
+    }
+    if (hit.volumeLine) {
+        if (e->modifiers() & Qt::ControlModifier) {
+            // add a keyframe on the volume line
+            m_doc->beginUndoStep();
+            const double local = hit.clip->clipLocal(timeAt(int(e->position().x())));
+            hit.clip->volume.setKey(local, hit.clip->volume.at(local));
+            m_doc->notifySequenceChanged(s->id);
+            m_drag = Drag::VolumeKey;
+            m_volKeyT = local;
+            return;
+        }
+        if (!hit.clip->volume.animated()) {
+            m_doc->beginUndoStep();
+            m_drag = Drag::VolumeLine;
+            m_volStart = hit.clip->volume.base();
+            return;
+        }
+    }
+
+    // selection
+    QSet<quint64> sel = m_doc->selectedClips();
+    if (e->modifiers() & Qt::ControlModifier) {
+        if (sel.contains(hit.clip->id)) sel.remove(hit.clip->id);
+        else sel.insert(hit.clip->id);
+        m_doc->setSelectedClips(sel);
+    } else if (!sel.contains(hit.clip->id)) {
+        m_doc->setSelectedClips(m_doc->withLinked(s->id, {hit.clip->id}));
+    }
+
+    if (hit.leftEdge || hit.rightEdge) {
+        // trim the clicked clip and its linked partner together
+        m_doc->beginUndoStep();
+        m_drag = hit.leftEdge ? Drag::TrimLeft : Drag::TrimRight;
+        m_dragIds = m_doc->withLinked(s->id, {hit.clip->id});
+        m_dragOrig.clear();
+        for (quint64 id : std::as_const(m_dragIds))
+            if (Clip *c = s->findClip(id)) m_dragOrig[id] = *c;
+        return;
+    }
+
+    // prepare move drag
+    m_drag = Drag::MoveClips;
+    m_dragIds = m_doc->withLinked(s->id, m_doc->selectedClips());
+    m_dragOrig.clear();
+    m_dragTrack.clear();
+    for (const Row &row : rows) {
+        Track *track = trackFor(row);
+        if (!track) continue;
+        for (Clip &c : track->clips)
+            if (m_dragIds.contains(c.id)) {
+                m_dragOrig[c.id] = c;
+                m_dragTrack[c.id] = {row.type, row.index};
+            }
+    }
+    m_grabDt = timeAt(int(e->position().x())) - hit.clip->start;
+    m_moveDelta = 0;
+    m_moveTrackDelta = 0;
+}
+
+void TimelineView::mouseMoveEvent(QMouseEvent *e) {
+    Sequence *s = seq();
+    if (!s) return;
+
+    if (m_drag == Drag::None) {
+        // hover cursors
+        if (e->position().x() < kHeaderW || e->position().y() < kRulerH) {
+            setCursor(Qt::ArrowCursor);
+            return;
+        }
+        Hit hit = hitTest(e->position());
+        if (m_tool == Tool::Razor && hit.clip) setCursor(Qt::CrossCursor);
+        else if (hit.transIn || hit.transOut) setCursor(Qt::SizeHorCursor);
+        else if (hit.volumeKeyT >= 0) setCursor(Qt::PointingHandCursor);
+        else if (hit.volumeLine) setCursor(Qt::SizeVerCursor);
+        else if (hit.leftEdge || hit.rightEdge) setCursor(Qt::SplitHCursor);
+        else setCursor(Qt::ArrowCursor);
+        return;
+    }
+
+    const double mouseT = timeAt(int(e->position().x()));
+
+    switch (m_drag) {
+    case Drag::Playhead:
+        m_doc->setPlayhead(s->id, qMax(0.0, s->snapFrame(mouseT)));
+        break;
+
+    case Drag::RubberBand: {
+        m_dragStarted = true;
+        m_rubber = QRectF(m_pressPos, e->position()).normalized();
+        QList<Row> rows = rowLayout();
+        QSet<quint64> sel;
+        for (const Row &row : rows) {
+            if (m_rubber.bottom() < row.y || m_rubber.top() > row.y + row.h)
+                continue;
+            Track *track = trackFor(row);
+            if (!track || track->locked) continue;
+            for (const Clip &c : track->clips)
+                if (clipRect(row, c).intersects(m_rubber)) sel.insert(c.id);
+        }
+        m_doc->setSelectedClips(sel);
+        update();
+        break;
+    }
+
+    case Drag::MoveClips: {
+        if (!m_dragStarted &&
+            (e->position() - m_pressPos).manhattanLength() < 5)
+            return;
+        m_dragStarted = true;
+        const Clip &grab = m_dragOrig[m_activeClip];
+        double delta = (mouseT - m_grabDt) - grab.start;
+        // snap either edge of the grabbed clip
+        const double s1 = snapTime(grab.start + delta, m_dragIds);
+        double d1 = s1 - grab.start;
+        const double ind1 = m_snapIndicator;
+        const double s2 = snapTime(grab.end() + delta, m_dragIds);
+        double d2 = s2 - grab.end();
+        if (std::abs(d1 - delta) <= std::abs(d2 - delta)) {
+            delta = d1;
+            m_snapIndicator = ind1;
+        } else {
+            delta = d2;
+        }
+        // clamp: nothing may move before t = 0
+        double minStart = 1e18;
+        for (const auto &c : m_dragOrig) minStart = qMin(minStart, c.start);
+        delta = qMax(delta, -minStart);
+        m_moveDelta = delta;
+
+        // vertical: rows of the same type as the grabbed clip
+        QList<Row> rows = rowLayout();
+        const Row *cur = rowAt(int(e->position().y()), rows);
+        const auto grabSrc = m_dragTrack.value(m_activeClip);
+        if (cur && cur->type == grabSrc.first) {
+            int d = cur->index - grabSrc.second;
+            // clamp so no dragged clip of this type goes below track 0
+            for (auto it = m_dragTrack.begin(); it != m_dragTrack.end(); ++it)
+                if (it.value().first == grabSrc.first)
+                    d = qMax(d, -it.value().second);
+            m_moveTrackDelta = d;
+        }
+        update();
+        break;
+    }
+
+    case Drag::TrimLeft:
+    case Drag::TrimRight: {
+        m_dragStarted = true;
+        for (quint64 id : std::as_const(m_dragIds)) {
+            Clip *c = s->findClip(id);
+            const Clip &orig = m_dragOrig.value(id);
+            if (!c) continue;
+            Track *track = nullptr;
+            s->findClip(id, &track);
+            // neighbours from the original layout
+            double prevEnd = 0, nextStart = 1e18;
+            if (track)
+                for (const Clip &o : track->clips) {
+                    if (o.id == id) continue;
+                    if (o.end() <= orig.start + 1e-6) prevEnd = qMax(prevEnd, o.end());
+                    if (o.start >= orig.end() - 1e-6)
+                        nextStart = qMin(nextStart, o.start);
+                }
+            // source length limit
+            double maxSrc = 1e18;
+            if (c->type == ClipType::Video || c->type == ClipType::Audio) {
+                if (const MediaItem *m = m_doc->project().mediaByIdConst(c->mediaId))
+                    if (m->duration > 0) maxSrc = m->duration;
+            } else if (c->type == ClipType::Nested) {
+                if (const Sequence *sub = m_doc->project().sequenceByIdConst(c->mediaId))
+                    maxSrc = qMax(1.0, sub->duration());
+            }
+            if (m_drag == Drag::TrimLeft) {
+                double ns = snapTime(mouseT, m_dragIds);
+                ns = qBound(qMax(prevEnd, orig.start - orig.in / orig.speed), ns,
+                            orig.end() - s->frameDur());
+                c->in = orig.in + (ns - orig.start) * orig.speed;
+                c->duration = orig.end() - ns;
+                c->start = ns;
+            } else {
+                double ne = snapTime(mouseT, m_dragIds);
+                const double maxEnd =
+                    qMin(nextStart, orig.start + (maxSrc - orig.in) / orig.speed);
+                ne = qBound(orig.start + s->frameDur(), ne, maxEnd);
+                c->duration = ne - orig.start;
+            }
+        }
+        m_doc->notifySequenceChanged(s->id);
+        break;
+    }
+
+    case Drag::TransIn:
+    case Drag::TransOut: {
+        Clip *c = s->findClip(m_activeClip);
+        if (!c) break;
+        if (m_drag == Drag::TransIn)
+            c->transIn.duration =
+                qBound(0.08, mouseT - c->start, c->duration);
+        else
+            c->transOut.duration = qBound(0.08, c->end() - mouseT, c->duration);
+        m_doc->notifySequenceChanged(s->id);
+        break;
+    }
+
+    case Drag::VolumeLine: {
+        Clip *c = s->findClip(m_activeClip);
+        if (!c) break;
+        QList<Row> rows = rowLayout();
+        const Row *row = rowAt(int(m_pressPos.y()), rows);
+        if (!row) break;
+        QRectF r = clipRect(*row, *c);
+        const double v =
+            qBound(0.0, (r.bottom() - 2 - e->position().y()) /
+                            qMax(1.0, r.height() - 4) * 2.0, 2.0);
+        c->volume.setBase(v);
+        m_doc->notifySequenceChanged(s->id);
+        break;
+    }
+
+    case Drag::VolumeKey: {
+        Clip *c = s->findClip(m_activeClip);
+        if (!c || m_volKeyT < 0) break;
+        QList<Row> rows = rowLayout();
+        const Row *row = rowAt(int(m_pressPos.y()), rows);
+        if (!row) break;
+        QRectF r = clipRect(*row, *c);
+        const double v =
+            qBound(0.0, (r.bottom() - 2 - e->position().y()) /
+                            qMax(1.0, r.height() - 4) * 2.0, 2.0);
+        double nt = qBound(0.0, c->clipLocal(mouseT), c->duration);
+        c->volume.removeKey(m_volKeyT);
+        c->volume.setKey(nt, v);
+        m_volKeyT = nt;
+        m_doc->notifySequenceChanged(s->id);
+        break;
+    }
+
+    default:
+        break;
+    }
+}
+
+void TimelineView::mouseReleaseEvent(QMouseEvent *e) {
+    Q_UNUSED(e);
+    Sequence *s = seq();
+    if (m_drag == Drag::MoveClips && m_dragStarted && s) commitMove();
+    m_drag = Drag::None;
+    m_dragStarted = false;
+    m_snapIndicator = -1;
+    if (s) updateScrollbars();
+    update();
+}
+
+void TimelineView::commitMove() {
+    Sequence *s = seq();
+    if (!s || (std::abs(m_moveDelta) < 1e-9 && m_moveTrackDelta == 0)) return;
+    m_doc->beginUndoStep();
+    const auto grabType = m_dragTrack.value(m_activeClip).first;
+    // remove all dragged clips first so they don't overwrite each other
+    for (quint64 id : std::as_const(m_dragIds)) s->removeClip(id);
+    for (auto it = m_dragOrig.begin(); it != m_dragOrig.end(); ++it) {
+        Clip c = it.value();
+        c.start = qMax(0.0, s->snapFrame(c.start + m_moveDelta));
+        auto src = m_dragTrack.value(it.key());
+        int idx = src.second;
+        if (src.first == grabType) idx = qMax(0, src.second + m_moveTrackDelta);
+        auto &list = src.first == TrackType::Video ? s->videoTracks : s->audioTracks;
+        while (list.size() <= idx) {
+            Track t;
+            t.type = src.first;
+            t.name = QString(src.first == TrackType::Video ? "V%1" : "A%1")
+                         .arg(list.size() + 1);
+            list.append(t);
+        }
+        list[idx].overwriteInsert(c);
+    }
+    m_doc->fixupClipIds(*s);
+    m_doc->notifySequenceChanged(s->id);
+}
+
+void TimelineView::mouseDoubleClickEvent(QMouseEvent *e) {
+    Sequence *s = seq();
+    if (!s) return;
+    if (e->position().x() < kHeaderW) {
+        QList<Row> rows = rowLayout();
+        if (const Row *row = rowAt(int(e->position().y()), rows))
+            applyHeaderClick(*row, e->position(), true);
+        return;
+    }
+    Hit hit = hitTest(e->position());
+    if (hit.volumeKeyT >= 0 && hit.clip) {  // remove volume keyframe
+        m_doc->beginUndoStep();
+        hit.clip->volume.removeKey(hit.volumeKeyT);
+        m_doc->notifySequenceChanged(s->id);
+        return;
+    }
+    if (hit.clip && hit.clip->type == ClipType::Nested)
+        m_doc->openSequenceTab(hit.clip->mediaId);  // dive into the nest
+}
+
+void TimelineView::applyHeaderClick(const Row &row, const QPointF &pos,
+                                    bool dblClick) {
+    Sequence *s = seq();
+    Track *track = trackFor(row);
+    if (!s || !track) return;
+    if (headerButtonRect(row, 0).contains(pos)) {
+        m_doc->beginUndoStep();
+        track->muted = !track->muted;
+        m_doc->notifySequenceChanged(s->id);
+        return;
+    }
+    if (headerButtonRect(row, 1).contains(pos)) {
+        m_doc->beginUndoStep();
+        track->locked = !track->locked;
+        m_doc->notifySequenceChanged(s->id);
+        return;
+    }
+    if (dblClick) {
+        bool ok = false;
+        const QString name = QInputDialog::getText(
+            this, tr("Rename Track"), tr("Track name:"), QLineEdit::Normal,
+            track->name, &ok);
+        if (ok && !name.isEmpty()) {
+            m_doc->beginUndoStep();
+            track->name = name;
+            m_doc->notifySequenceChanged(s->id);
+        }
+        return;
+    }
+    m_doc->selectTrack(row.type, row.index);
+}
+
+void TimelineView::wheelEvent(QWheelEvent *e) {
+    const double steps = e->angleDelta().y() / 120.0;
+    if (e->modifiers() & Qt::ControlModifier) {
+        zoom(std::pow(1.25, steps), int(e->position().x()));
+    } else if (e->modifiers() & Qt::ShiftModifier) {
+        m_vbar->setValue(m_vbar->value() - int(steps * 40));
+    } else {
+        m_scrollT = qMax(0.0, m_scrollT - steps * 60.0 / m_pxPerSec);
+        m_hbar->setValue(int(m_scrollT * 1000));
+        update();
+    }
+    e->accept();
+}
+
+void TimelineView::zoom(double factor, int anchorX) {
+    if (anchorX < kHeaderW) anchorX = kHeaderW + (width() - kHeaderW) / 2;
+    const double anchorT = timeAt(anchorX);
+    m_pxPerSec = qBound(0.5, m_pxPerSec * factor, 2000.0);
+    m_scrollT = qMax(0.0, anchorT - double(anchorX - kHeaderW) / m_pxPerSec);
+    updateScrollbars();
+    update();
+}
+
+void TimelineView::zoomToFit() {
+    Sequence *s = seq();
+    if (!s) return;
+    const double dur = qMax(1.0, s->duration());
+    m_pxPerSec = qBound(0.5, (width() - kHeaderW - 40) / dur, 2000.0);
+    m_scrollT = 0;
+    updateScrollbars();
+    update();
+}
+
+// --------------------------------------------------------------- editing actions
+void TimelineView::splitAtPlayhead(bool selectedOnly) {
+    Sequence *s = seq();
+    if (!s) return;
+    if (selectedOnly && m_doc->selectedClips().isEmpty()) selectedOnly = false;
+    m_doc->splitAt(s->id, m_doc->playhead(s->id), selectedOnly);
+}
+
+void TimelineView::deleteSelected(bool ripple) {
+    Sequence *s = seq();
+    if (!s) return;
+    m_doc->deleteClips(s->id, m_doc->selectedClips(), ripple);
+}
+
+void TimelineView::nestSelected() {
+    Sequence *s = seq();
+    if (!s) return;
+    m_doc->nestClips(s->id, m_doc->selectedClips());
+}
+
+void TimelineView::selectAll() {
+    Sequence *s = seq();
+    if (!s) return;
+    QSet<quint64> sel;
+    for (const auto *list : {&s->videoTracks, &s->audioTracks})
+        for (const auto &t : *list)
+            for (const auto &c : t.clips) sel.insert(c.id);
+    m_doc->setSelectedClips(sel);
+}
+
+void TimelineView::setTool(Tool t) {
+    if (m_tool == t) return;
+    m_tool = t;
+    emit toolChanged();
+    setCursor(t == Tool::Razor ? Qt::CrossCursor : Qt::ArrowCursor);
+}
+
+// ----------------------------------------------------------------- context menu
+void TimelineView::contextMenuEvent(QContextMenuEvent *e) {
+    Sequence *s = seq();
+    if (!s) return;
+    Hit hit = hitTest(QPointF(e->pos()));
+    QMenu menu(this);
+
+    if (hit.clip) {
+        if (!m_doc->selectedClips().contains(hit.clip->id))
+            m_doc->setSelectedClips(m_doc->withLinked(s->id, {hit.clip->id}));
+        const quint64 clipId = hit.clip->id;
+
+        QAction *split = menu.addAction(tr("Split at Playhead\tS"));
+        QAction *speed = menu.addAction(tr("Speed / Duration…\tR"));
+        QAction *nest = menu.addAction(tr("Chain into Nested Sequence\tAlt+C"));
+        QAction *unlink = nullptr;
+        if (hit.clip->linkId)
+            unlink = menu.addAction(tr("Unlink Audio/Video"));
+        QAction *toggle = menu.addAction(hit.clip->enabled ? tr("Disable")
+                                                           : tr("Enable"));
+        menu.addSeparator();
+        QMenu *transMenu = menu.addMenu(tr("Add Transition"));
+        QAction *tDissolveIn = transMenu->addAction(tr("Cross Dissolve (start)"));
+        QAction *tFadeIn = transMenu->addAction(tr("Fade In"));
+        QAction *tFadeOut = transMenu->addAction(tr("Fade Out"));
+        QAction *tDipIn = transMenu->addAction(tr("Dip from Black (start)"));
+        QAction *tDipOut = transMenu->addAction(tr("Dip to Black (end)"));
+        menu.addSeparator();
+        QAction *copy = menu.addAction(tr("Copy\tCtrl+C"));
+        QAction *del = menu.addAction(tr("Delete\tDel"));
+        QAction *ripple = menu.addAction(tr("Ripple Delete\tAlt+Del"));
+
+        QAction *chosen = menu.exec(e->globalPos());
+        if (!chosen) return;
+        auto setTrans = [&](bool in, TransitionType type) {
+            m_doc->beginUndoStep();
+            if (Clip *c = s->findClip(clipId)) {
+                Transition tnew{type, qMin(1.0, c->duration / 2)};
+                (in ? c->transIn : c->transOut) = tnew;
+                m_doc->notifySequenceChanged(s->id);
+            }
+        };
+        if (chosen == split) {
+            splitAtPlayhead(true);
+        } else if (chosen == speed) {
+            bool ok = false;
+            double v = QInputDialog::getDouble(
+                this, tr("Clip Speed"), tr("Speed (%):"),
+                hit.clip->speed * 100.0, 5, 2000, 1, &ok);
+            if (ok) m_doc->setClipSpeed(s->id, clipId, v / 100.0);
+        } else if (chosen == nest) {
+            nestSelected();
+        } else if (unlink && chosen == unlink) {
+            m_doc->unlinkClips(s->id, m_doc->selectedClips());
+        } else if (chosen == toggle) {
+            m_doc->beginUndoStep();
+            for (quint64 id : m_doc->selectedClips())
+                if (Clip *c = s->findClip(id)) c->enabled = !c->enabled;
+            m_doc->notifySequenceChanged(s->id);
+        } else if (chosen == tDissolveIn) {
+            setTrans(true, TransitionType::CrossDissolve);
+        } else if (chosen == tFadeIn) {
+            setTrans(true, TransitionType::Fade);
+        } else if (chosen == tFadeOut) {
+            setTrans(false, TransitionType::Fade);
+        } else if (chosen == tDipIn) {
+            setTrans(true, TransitionType::DipToBlack);
+        } else if (chosen == tDipOut) {
+            setTrans(false, TransitionType::DipToBlack);
+        } else if (chosen == copy) {
+            m_doc->copyClips(s->id, m_doc->selectedClips());
+        } else if (chosen == del) {
+            deleteSelected(false);
+        } else if (chosen == ripple) {
+            deleteSelected(true);
+        }
+        return;
+    }
+
+    // empty area / header
+    QAction *addV = menu.addAction(tr("Add Video Track"));
+    QAction *addA = menu.addAction(tr("Add Audio Track"));
+    QAction *delTrack = nullptr;
+    if (hit.track)
+        delTrack = menu.addAction(tr("Delete Track \"%1\"").arg(hit.track->name));
+    menu.addSeparator();
+    QAction *paste = menu.addAction(tr("Paste\tCtrl+V"));
+    paste->setEnabled(m_doc->canPaste());
+    QAction *chosen = menu.exec(e->globalPos());
+    if (!chosen) return;
+    if (chosen == addV) m_doc->addTrack(s->id, TrackType::Video);
+    else if (chosen == addA) m_doc->addTrack(s->id, TrackType::Audio);
+    else if (delTrack && chosen == delTrack)
+        m_doc->removeTrack(s->id, hit.type, hit.trackIdx);
+    else if (chosen == paste)
+        m_doc->pasteClips(s->id, m_doc->playhead(s->id));
+}
+
+// ------------------------------------------------------------------ drag & drop
+void TimelineView::dragEnterEvent(QDragEnterEvent *e) {
+    if (e->mimeData()->hasFormat(kItemMime) ||
+        e->mimeData()->hasFormat(kEffectMime))
+        e->acceptProposedAction();
+}
+
+void TimelineView::dragMoveEvent(QDragMoveEvent *e) {
+    if (e->mimeData()->hasFormat(kItemMime)) {
+        Sequence *s = seq();
+        m_dropRef = QString::fromUtf8(e->mimeData()->data(kItemMime));
+        m_dropDur = 5.0;
+        if (m_dropRef.startsWith("media:")) {
+            if (const MediaItem *m =
+                    m_doc->project().mediaByIdConst(m_dropRef.mid(6))) {
+                if (m->duration > 0) m_dropDur = m->duration;
+                m_dropType = m->hasVideo ? TrackType::Video : TrackType::Audio;
+            }
+        } else if (m_dropRef.startsWith("sequence:")) {
+            m_dropType = TrackType::Video;
+            if (const Sequence *sub =
+                    m_doc->project().sequenceByIdConst(m_dropRef.mid(9)))
+                m_dropDur = qMax(1.0, sub->duration());
+        }
+        if (s) {
+            QList<Row> rows = rowLayout();
+            const Row *row = rowAt(int(e->position().y()), rows);
+            if (row && row->type == m_dropType) m_dropTrack = row->index;
+            else if (!row) m_dropTrack = 0;
+            m_dropT = qMax(0.0, snapTime(timeAt(int(e->position().x())), {}));
+        } else {
+            m_dropT = 0;
+            m_dropTrack = 0;
+        }
+        update();
+        e->acceptProposedAction();
+        return;
+    }
+    if (e->mimeData()->hasFormat(kEffectMime)) {
+        e->acceptProposedAction();
+    }
+}
+
+void TimelineView::dragLeaveEvent(QDragLeaveEvent *) {
+    m_dropRef.clear();
+    m_dropT = -1;
+    m_snapIndicator = -1;
+    update();
+}
+
+void TimelineView::dropEvent(QDropEvent *e) {
+    Sequence *s = seq();
+    m_snapIndicator = -1;
+
+    if (e->mimeData()->hasFormat(kItemMime)) {
+        const QString ref = QString::fromUtf8(e->mimeData()->data(kItemMime));
+        m_dropRef.clear();
+        m_dropT = -1;
+        if (!s) {
+            // dropping into an empty project: build a matching sequence
+            if (ref.startsWith("media:"))
+                m_doc->sequenceFromMedia(ref.mid(6));
+            else if (ref.startsWith("sequence:"))
+                m_doc->openSequenceTab(ref.mid(9));
+            return;
+        }
+        const double t = qMax(0.0, snapTime(timeAt(int(e->position().x())), {}));
+        QList<Row> rows = rowLayout();
+        const Row *row = rowAt(int(e->position().y()), rows);
+        int idx = (row && row->type == m_dropType) ? row->index : 0;
+        QList<quint64> ids;
+        if (ref.startsWith("media:"))
+            ids = m_doc->addMediaClip(s->id, ref.mid(6), m_dropType, idx, t);
+        else if (ref.startsWith("sequence:"))
+            ids << m_doc->addNestedClip(s->id, ref.mid(9), idx, t);
+        QSet<quint64> sel;
+        for (quint64 id : std::as_const(ids))
+            if (id) sel.insert(id);
+        if (!sel.isEmpty()) m_doc->setSelectedClips(sel);
+        update();
+        return;
+    }
+
+    if (e->mimeData()->hasFormat(kEffectMime) && s) {
+        const QString effectId =
+            QString::fromUtf8(e->mimeData()->data(kEffectMime));
+        const EffectDesc *desc = EffectRegistry::instance()->byId(effectId);
+        Hit hit = hitTest(e->position());
+        if (!desc || !hit.clip) return;
+        m_doc->beginUndoStep();
+        if (desc->isTransition) {
+            const bool atStart =
+                e->position().x() < hit.rect.center().x();
+            Transition tr0{desc->transitionType,
+                           qMin(1.0, hit.clip->duration / 2)};
+            if (atStart) hit.clip->transIn = tr0;
+            else hit.clip->transOut = tr0;
+        } else if (desc->isAudio) {
+            if (hit.clip->type == ClipType::Audio ||
+                hit.clip->type == ClipType::Nested)
+                hit.clip->effects.append(
+                    EffectRegistry::instance()->createInstance(effectId));
+        } else {
+            if (hit.clip->isVideoKind())
+                hit.clip->effects.append(
+                    EffectRegistry::instance()->createInstance(effectId));
+        }
+        m_doc->setSelectedClips({hit.clip->id});
+        m_doc->notifySequenceChanged(s->id);
+        emit m_doc->selectionChanged();
+        update();
+    }
+}
+
+// ------------------------------------------------------------------- scrolling
+void TimelineView::resizeEvent(QResizeEvent *) {
+    m_hbar->setGeometry(kHeaderW, height() - 12, width() - kHeaderW - 12, 12);
+    m_vbar->setGeometry(width() - 12, kRulerH, 12, height() - kRulerH - 12);
+    updateScrollbars();
+}
+
+void TimelineView::leaveEvent(QEvent *) { setCursor(Qt::ArrowCursor); }
+
+void TimelineView::updateScrollbars() {
+    Sequence *s = seq();
+    const double dur = s ? s->duration() : 0;
+    const double maxT = dur + 120.0;
+    m_hbar->blockSignals(true);
+    m_hbar->setRange(0, int(maxT * 1000));
+    m_hbar->setPageStep(int((width() - kHeaderW) / m_pxPerSec * 1000));
+    m_hbar->setValue(int(m_scrollT * 1000));
+    m_hbar->blockSignals(false);
+
+    int totalH = kRulerH + kGap;
+    if (s) {
+        totalH += s->videoTracks.size() * (kVideoH + kGap) + 4 +
+                  s->audioTracks.size() * (kAudioH + kGap);
+    }
+    m_vbar->blockSignals(true);
+    m_vbar->setRange(0, qMax(0, totalH - height() + 16));
+    m_vbar->setPageStep(height());
+    m_vbar->setValue(m_scrollY);
+    m_vbar->blockSignals(false);
+    m_vbar->setVisible(m_vbar->maximum() > 0);
+}
+
+void TimelineView::ensurePlayheadVisible() {
+    Sequence *s = seq();
+    if (!s || m_drag != Drag::None) return;
+    const int x = xAt(m_doc->playhead(s->id));
+    if (x > width() - 30) {
+        m_scrollT = m_doc->playhead(s->id) - (width() - kHeaderW) * 0.15 / m_pxPerSec;
+        m_hbar->setValue(int(m_scrollT * 1000));
+    } else if (x < kHeaderW) {
+        m_scrollT = qMax(0.0, m_doc->playhead(s->id) - 0.5);
+        m_hbar->setValue(int(m_scrollT * 1000));
+    }
+}
