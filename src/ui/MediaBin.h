@@ -26,6 +26,7 @@ private:
     QListWidget *m_list;
     QLineEdit *m_search;
     QHash<QString, QIcon> m_thumbs;
+    bool m_refreshing = false;
 
 protected:
     void dragEnterEvent(QDragEnterEvent *e) override;

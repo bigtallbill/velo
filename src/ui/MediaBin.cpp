@@ -49,7 +49,24 @@ MediaBin::MediaBin(Document *doc, QWidget *parent) : QWidget(parent), m_doc(doc)
     m_list->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_list->setContextMenuPolicy(Qt::CustomContextMenu);
     m_list->setTextElideMode(Qt::ElideMiddle);
+    // click an already-selected item (or F2) to rename it in place
+    m_list->setEditTriggers(QAbstractItemView::SelectedClicked |
+                            QAbstractItemView::EditKeyPressed);
     lay->addWidget(m_list, 1);
+
+    connect(m_list, &QListWidget::itemChanged, this, [this](QListWidgetItem *it) {
+        if (m_refreshing) return;
+        const QString ref = it->data(Qt::UserRole).toString();
+        const QString name = it->text().trimmed();
+        if (name.isEmpty()) {
+            refresh();
+            return;
+        }
+        if (ref.startsWith("sequence:"))
+            m_doc->renameSequence(ref.mid(9), name);
+        else if (ref.startsWith("media:"))
+            m_doc->renameMedia(ref.mid(6), name);
+    });
 
     connect(m_list, &QListWidget::customContextMenuRequested, this,
             &MediaBin::contextMenu);
@@ -129,6 +146,7 @@ void MediaBin::makeThumbnail(const QString &mediaId) {
 }
 
 void MediaBin::refresh() {
+    m_refreshing = true;
     const QString filter = m_search->text().trimmed();
     m_list->clear();
     for (const auto &seq : m_doc->project().sequences) {
@@ -136,6 +154,7 @@ void MediaBin::refresh() {
         if (!filter.isEmpty() && !seq.name.contains(filter, Qt::CaseInsensitive))
             continue;
         auto *it = new QListWidgetItem(seq.name);
+        it->setFlags(it->flags() | Qt::ItemIsEditable);
         it->setData(Qt::UserRole, "sequence:" + seq.id);
         it->setIcon(paintIcon(QImage(), Theme::nestedClip(), "▦"));
         it->setToolTip(tr("Sequence — %1×%2 @ %3 fps")
@@ -148,6 +167,7 @@ void MediaBin::refresh() {
         if (!filter.isEmpty() && !m.name.contains(filter, Qt::CaseInsensitive))
             continue;
         auto *it = new QListWidgetItem(m.name);
+        it->setFlags(it->flags() | Qt::ItemIsEditable);
         it->setData(Qt::UserRole, "media:" + m.id);
         if (m_thumbs.contains(m.id)) {
             it->setIcon(m_thumbs[m.id]);
@@ -165,6 +185,7 @@ void MediaBin::refresh() {
         it->setToolTip(tip);
         m_list->addItem(it);
     }
+    m_refreshing = false;
 }
 
 void MediaBin::contextMenu(const QPoint &pos) {

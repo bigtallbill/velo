@@ -7,6 +7,33 @@ class QTabBar;
 class QToolButton;
 class TimelineView;
 
+// Horizontal navigator: drag the middle to scroll, drag the handle's
+// edges to zoom (like Premiere's zoom scrollbar).
+class ZoomBar : public QWidget {
+    Q_OBJECT
+public:
+    explicit ZoomBar(QWidget *parent = nullptr);
+    // total timeline extent and the currently visible window, in seconds
+    void setView(double total, double start, double len);
+
+signals:
+    void viewChanged(double start, double len);
+
+protected:
+    void paintEvent(QPaintEvent *) override;
+    void mousePressEvent(QMouseEvent *) override;
+    void mouseMoveEvent(QMouseEvent *) override;
+    void mouseReleaseEvent(QMouseEvent *) override;
+    void leaveEvent(QEvent *) override;
+
+private:
+    QRectF handleRect() const;
+    double tAt(double x) const { return x / qMax(1, width()) * m_total; }
+    double m_total = 120, m_start = 0, m_len = 60;
+    int m_mode = 0;  // 0 none, 1 left edge, 2 right edge, 3 move
+    double m_grabOffset = 0;
+};
+
 // Tabs + tools + the timeline canvas.
 class TimelinePanel : public QWidget {
     Q_OBJECT
@@ -72,7 +99,10 @@ private:
     };
     enum class Drag {
         None, Playhead, MoveClips, TrimLeft, TrimRight, RubberBand,
-        VolumeLine, VolumeKey, TransIn, TransOut
+        VolumeLine, VolumeKey, TransIn, TransOut,
+        // grabbed an audio clip on its volume line: vertical movement edits
+        // the volume, horizontal movement moves the clip
+        VolumeOrMove
     };
 
     // geometry
@@ -99,7 +129,8 @@ private:
     };
     Hit hitTest(const QPointF &pos);
 
-    double snapTime(double t, const QSet<quint64> &ignore, bool force = false);
+    double snapTime(double t, const QSet<quint64> &ignore,
+                    bool *didSnap = nullptr);
     void commitMove();
     void applyHeaderClick(const Row &row, const QPointF &pos, bool dblClick);
     void updateScrollbars();
@@ -112,7 +143,8 @@ private:
     double m_pxPerSec = 60;
     double m_scrollT = 0;
     int m_scrollY = 0;
-    QScrollBar *m_hbar, *m_vbar;
+    ZoomBar *m_hbar;
+    QScrollBar *m_vbar;
 
     Drag m_drag = Drag::None;
     QPointF m_pressPos;

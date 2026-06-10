@@ -178,6 +178,9 @@ void Track::overwriteInsert(const Clip &c) {
         }
     }
     clips.append(c);
+    // drop slivers left over from sub-frame overlaps
+    for (int i = clips.size() - 1; i >= 0; --i)
+        if (clips[i].duration < 1e-3) clips.removeAt(i);
     sortClips();
 }
 QJsonObject Track::toJson() const {

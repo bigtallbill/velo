@@ -5,6 +5,7 @@
 #include <QContextMenuEvent>
 #include <QHBoxLayout>
 #include <QInputDialog>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMimeData>
 #include <QPainter>
@@ -74,6 +75,22 @@ TimelinePanel::TimelinePanel(Document *doc, QWidget *parent)
     connect(m_tabs, &QTabBar::tabCloseRequested, this, [this](int idx) {
         m_doc->closeSequenceTab(m_tabs->tabData(idx).toString());
     });
+    // double-click a tab to rename the sequence in place
+    connect(m_tabs, &QTabBar::tabBarDoubleClicked, this, [this](int idx) {
+        if (idx < 0) return;
+        const QString seqId = m_tabs->tabData(idx).toString();
+        auto *edit = new QLineEdit(m_tabs->tabText(idx), m_tabs);
+        edit->setGeometry(m_tabs->tabRect(idx).adjusted(2, 2, -2, -2));
+        edit->setFrame(false);
+        edit->selectAll();
+        edit->show();
+        edit->setFocus();
+        connect(edit, &QLineEdit::editingFinished, this, [this, edit, seqId] {
+            const QString name = edit->text().trimmed();
+            edit->deleteLater();
+            if (!name.isEmpty()) m_doc->renameSequence(seqId, name);
+        });
+    });
     connect(doc, &Document::sequenceListChanged, this, &TimelinePanel::rebuildTabs);
     connect(doc, &Document::projectLoaded, this, &TimelinePanel::rebuildTabs);
     connect(doc, &Document::activeSequenceChanged, this, [this](const QString &id) {
@@ -112,6 +129,96 @@ void TimelinePanel::rebuildTabs() {
     m_view->update();
 }
 
+// --------------------------------------------------------------------- ZoomBar
+ZoomBar::ZoomBar(QWidget *parent) : QWidget(parent) {
+    setMouseTracking(true);
+    setCursor(Qt::ArrowCursor);
+}
+
+void ZoomBar::setView(double total, double start, double len) {
+    m_total = qMax(1.0, total);
+    m_start = qBound(0.0, start, m_total);
+    m_len = qBound(0.01, len, m_total);
+    update();
+}
+
+QRectF ZoomBar::handleRect() const {
+    const double w = width();
+    double x0 = m_start / m_total * w;
+    double x1 = (m_start + m_len) / m_total * w;
+    if (x1 - x0 < 24) {  // keep the handle grabbable
+        const double c = (x0 + x1) / 2;
+        x0 = qBound(0.0, c - 12, w - 24);
+        x1 = x0 + 24;
+    }
+    return QRectF(x0, 2, x1 - x0, height() - 4);
+}
+
+void ZoomBar::paintEvent(QPaintEvent *) {
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.fillRect(rect(), Theme::panelDark());
+    const QRectF h = handleRect();
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(0x3f, 0x42, 0x48));
+    p.drawRoundedRect(h, 5, 5);
+    // edge grips
+    p.setBrush(QColor(0x6a, 0x6e, 0x76));
+    p.drawRoundedRect(QRectF(h.left(), h.top(), 5, h.height()), 2, 2);
+    p.drawRoundedRect(QRectF(h.right() - 5, h.top(), 5, h.height()), 2, 2);
+}
+
+void ZoomBar::mousePressEvent(QMouseEvent *e) {
+    if (e->button() != Qt::LeftButton) return;
+    const QRectF h = handleRect();
+    const double x = e->position().x();
+    if (std::abs(x - h.left()) < 7) m_mode = 1;
+    else if (std::abs(x - h.right()) < 7) m_mode = 2;
+    else if (h.contains(e->position())) {
+        m_mode = 3;
+        m_grabOffset = tAt(x) - m_start;
+    } else {  // jump-scroll: center the view on the click
+        m_mode = 3;
+        m_grabOffset = m_len / 2;
+        emit viewChanged(qBound(0.0, tAt(x) - m_len / 2, m_total - m_len), m_len);
+    }
+}
+
+void ZoomBar::mouseMoveEvent(QMouseEvent *e) {
+    const double x = e->position().x();
+    if (m_mode == 0) {
+        const QRectF h = handleRect();
+        if (std::abs(x - h.left()) < 7 || std::abs(x - h.right()) < 7)
+            setCursor(Qt::SizeHorCursor);
+        else if (h.contains(e->position()))
+            setCursor(Qt::OpenHandCursor);
+        else
+            setCursor(Qt::ArrowCursor);
+        return;
+    }
+    const double t = qBound(0.0, tAt(x), m_total);
+    double start = m_start, len = m_len;
+    if (m_mode == 1) {  // left edge: right edge stays put
+        const double end = m_start + m_len;
+        start = qMin(t, end - 0.05);
+        len = end - start;
+    } else if (m_mode == 2) {  // right edge
+        len = qMax(0.05, t - m_start);
+        len = qMin(len, m_total - m_start);
+    } else {
+        start = qBound(0.0, t - m_grabOffset, m_total - m_len);
+    }
+    m_start = start;
+    m_len = len;
+    emit viewChanged(start, len);
+    update();
+}
+
+void ZoomBar::mouseReleaseEvent(QMouseEvent *) { m_mode = 0; }
+void ZoomBar::leaveEvent(QEvent *) {
+    if (m_mode == 0) setCursor(Qt::ArrowCursor);
+}
+
 // ----------------------------------------------------------------- TimelineView
 TimelineView::TimelineView(Document *doc, QWidget *parent)
     : QWidget(parent), m_doc(doc) {
@@ -119,10 +226,11 @@ TimelineView::TimelineView(Document *doc, QWidget *parent)
     setAcceptDrops(true);
     setFocusPolicy(Qt::ClickFocus);
     setMinimumHeight(180);
-    m_hbar = new QScrollBar(Qt::Horizontal, this);
+    m_hbar = new ZoomBar(this);
     m_vbar = new QScrollBar(Qt::Vertical, this);
-    connect(m_hbar, &QScrollBar::valueChanged, this, [this](int v) {
-        m_scrollT = v / 1000.0;
+    connect(m_hbar, &ZoomBar::viewChanged, this, [this](double start, double len) {
+        m_scrollT = qMax(0.0, start);
+        m_pxPerSec = qBound(0.1, (width() - kHeaderW) / qMax(0.05, len), 2000.0);
         update();
     });
     connect(m_vbar, &QScrollBar::valueChanged, this, [this](int v) {
@@ -248,10 +356,14 @@ void TimelineView::paintEvent(QPaintEvent *) {
                        b == 1 ? "🔒" : (row.type == TrackType::Video ? "👁" : "M"));
         }
         if (track->locked) {
-            p.fillRect(lane, QColor(255, 255, 255, 14));
+            QBrush hatch(QColor(255, 255, 255, 26), Qt::BDiagPattern);
+            p.fillRect(lane, hatch);
         }
 
-        // ---- clips ------------------------------------------------------------
+        // ---- clips (clipped to the lane so they never cover the headers) -------
+        p.save();
+        p.setClipRect(QRect(kHeaderW, kRulerH, width() - kHeaderW,
+                            height() - kRulerH));
         for (const Clip &c : track->clips) {
             QRectF r = clipRect(row, c);
             if (r.right() < kHeaderW || r.left() > width()) continue;
@@ -372,9 +484,12 @@ void TimelineView::paintEvent(QPaintEvent *) {
                 p.drawRoundedRect(r.adjusted(0.8, 0.8, -0.8, -0.8), 3, 3);
             }
         }
+        p.restore();
     }
 
     // ---- move ghost (drag preview) -------------------------------------------
+    p.save();
+    p.setClipRect(QRect(kHeaderW, kRulerH, width() - kHeaderW, height() - kRulerH));
     if (m_drag == Drag::MoveClips && m_dragStarted) {
         p.setPen(QPen(Theme::accent(), 1.4, Qt::DashLine));
         p.setBrush(QColor(0x4f, 0x9c, 0xf5, 60));
@@ -418,6 +533,7 @@ void TimelineView::paintEvent(QPaintEvent *) {
         p.setBrush(QColor(0x4f, 0x9c, 0xf5, 40));
         p.drawRect(m_rubber);
     }
+    p.restore();
 
     // ---- ruler -------------------------------------------------------------------
     p.fillRect(QRect(0, 0, width(), kRulerH), Theme::panel());
@@ -453,10 +569,12 @@ void TimelineView::paintEvent(QPaintEvent *) {
                formatTimecode(playT, s->fps));
 
     // ---- snap indicator -------------------------------------------------------------
-    if (m_snapIndicator >= 0 && m_drag != Drag::None) {
+    if (m_snapIndicator >= 0) {
         const int x = xAt(m_snapIndicator);
-        p.setPen(QPen(QColor(0xff, 0xd5, 0x4f), 1));
-        p.drawLine(x, kRulerH, x, height());
+        if (x >= kHeaderW) {
+            p.setPen(QPen(QColor(0xff, 0xd5, 0x4f), 1));
+            p.drawLine(x, kRulerH, x, height());
+        }
     }
 
     // ---- playhead ---------------------------------------------------------------------
@@ -539,13 +657,14 @@ TimelineView::Hit TimelineView::hitTest(const QPointF &pos) {
     return hit;
 }
 
-double TimelineView::snapTime(double t, const QSet<quint64> &ignore, bool force) {
+double TimelineView::snapTime(double t, const QSet<quint64> &ignore,
+                              bool *didSnap) {
     m_snapIndicator = -1;
+    if (didSnap) *didSnap = false;
     Sequence *s = seq();
     if (!s) return t;
-    const bool noSnap = !force && (!m_magnet ||
-                                   QGuiApplication::keyboardModifiers() &
-                                       Qt::AltModifier);
+    const bool noSnap = !m_magnet || (QGuiApplication::keyboardModifiers() &
+                                      Qt::AltModifier);
     if (noSnap) return s->snapFrame(t);
     const double thr = 9.0 / m_pxPerSec;
     double best = t, bestD = thr;
@@ -567,6 +686,7 @@ double TimelineView::snapTime(double t, const QSet<quint64> &ignore, bool force)
             }
     if (bestD < thr) {
         m_snapIndicator = best;
+        if (didSnap) *didSnap = true;
         return best;
     }
     return s->snapFrame(t);
@@ -631,6 +751,7 @@ void TimelineView::mousePressEvent(QMouseEvent *e) {
         m_volKeyT = hit.volumeKeyT;
         return;
     }
+    bool deferVolume = false;
     if (hit.volumeLine) {
         if (e->modifiers() & Qt::ControlModifier) {
             // add a keyframe on the volume line
@@ -642,11 +763,10 @@ void TimelineView::mousePressEvent(QMouseEvent *e) {
             m_volKeyT = local;
             return;
         }
+        // ambiguous grab: prepare a clip move too and decide on first motion
         if (!hit.clip->volume.animated()) {
-            m_doc->beginUndoStep();
-            m_drag = Drag::VolumeLine;
+            deferVolume = true;
             m_volStart = hit.clip->volume.base();
-            return;
         }
     }
 
@@ -672,7 +792,7 @@ void TimelineView::mousePressEvent(QMouseEvent *e) {
     }
 
     // prepare move drag
-    m_drag = Drag::MoveClips;
+    m_drag = deferVolume ? Drag::VolumeOrMove : Drag::MoveClips;
     m_dragIds = m_doc->withLinked(s->id, m_doc->selectedClips());
     m_dragOrig.clear();
     m_dragTrack.clear();
@@ -712,6 +832,18 @@ void TimelineView::mouseMoveEvent(QMouseEvent *e) {
 
     const double mouseT = timeAt(int(e->position().x()));
 
+    // ambiguous volume-line grab: direction of first motion decides
+    if (m_drag == Drag::VolumeOrMove) {
+        const QPointF d = e->position() - m_pressPos;
+        if (d.manhattanLength() < 6) return;
+        if (std::abs(d.y()) > std::abs(d.x())) {
+            m_doc->beginUndoStep();
+            m_drag = Drag::VolumeLine;
+        } else {
+            m_drag = Drag::MoveClips;
+        }
+    }
+
     switch (m_drag) {
     case Drag::Playhead:
         m_doc->setPlayhead(s->id, qMax(0.0, s->snapFrame(mouseT)));
@@ -742,17 +874,21 @@ void TimelineView::mouseMoveEvent(QMouseEvent *e) {
         m_dragStarted = true;
         const Clip &grab = m_dragOrig[m_activeClip];
         double delta = (mouseT - m_grabDt) - grab.start;
-        // snap either edge of the grabbed clip
-        const double s1 = snapTime(grab.start + delta, m_dragIds);
-        double d1 = s1 - grab.start;
+        // snap whichever edge of the grabbed clip catches a snap point
+        bool snap1 = false, snap2 = false;
+        const double s1 = snapTime(grab.start + delta, m_dragIds, &snap1);
+        const double d1 = s1 - grab.start;
         const double ind1 = m_snapIndicator;
-        const double s2 = snapTime(grab.end() + delta, m_dragIds);
-        double d2 = s2 - grab.end();
-        if (std::abs(d1 - delta) <= std::abs(d2 - delta)) {
+        const double s2 = snapTime(grab.end() + delta, m_dragIds, &snap2);
+        const double d2 = s2 - grab.end();
+        if (snap1 && (!snap2 || std::abs(d1 - delta) <= std::abs(d2 - delta))) {
             delta = d1;
             m_snapIndicator = ind1;
-        } else {
+        } else if (snap2) {
             delta = d2;
+        } else {
+            delta = d1;  // frame-quantized, no indicator
+            m_snapIndicator = -1;
         }
         // clamp: nothing may move before t = 0
         double minStart = 1e18;
@@ -805,9 +941,15 @@ void TimelineView::mouseMoveEvent(QMouseEvent *e) {
             }
             if (m_drag == Drag::TrimLeft) {
                 double ns = snapTime(mouseT, m_dragIds);
-                ns = qBound(qMax(prevEnd, orig.start - orig.in / orig.speed), ns,
+                // stills/text have no source in-point to run out of
+                const bool boundless = c->type == ClipType::Image ||
+                                       c->type == ClipType::Text;
+                const double srcBound =
+                    boundless ? 0.0 : orig.start - orig.in / orig.speed;
+                ns = qBound(qMax(prevEnd, srcBound), ns,
                             orig.end() - s->frameDur());
-                c->in = orig.in + (ns - orig.start) * orig.speed;
+                c->in = boundless ? 0.0
+                                  : orig.in + (ns - orig.start) * orig.speed;
                 c->duration = orig.end() - ns;
                 c->start = ns;
             } else {
@@ -971,7 +1113,7 @@ void TimelineView::wheelEvent(QWheelEvent *e) {
         m_vbar->setValue(m_vbar->value() - int(steps * 40));
     } else {
         m_scrollT = qMax(0.0, m_scrollT - steps * 60.0 / m_pxPerSec);
-        m_hbar->setValue(int(m_scrollT * 1000));
+        updateScrollbars();
         update();
     }
     e->accept();
@@ -980,7 +1122,7 @@ void TimelineView::wheelEvent(QWheelEvent *e) {
 void TimelineView::zoom(double factor, int anchorX) {
     if (anchorX < kHeaderW) anchorX = kHeaderW + (width() - kHeaderW) / 2;
     const double anchorT = timeAt(anchorX);
-    m_pxPerSec = qBound(0.5, m_pxPerSec * factor, 2000.0);
+    m_pxPerSec = qBound(0.1, m_pxPerSec * factor, 2000.0);
     m_scrollT = qMax(0.0, anchorT - double(anchorX - kHeaderW) / m_pxPerSec);
     updateScrollbars();
     update();
@@ -990,7 +1132,7 @@ void TimelineView::zoomToFit() {
     Sequence *s = seq();
     if (!s) return;
     const double dur = qMax(1.0, s->duration());
-    m_pxPerSec = qBound(0.5, (width() - kHeaderW - 40) / dur, 2000.0);
+    m_pxPerSec = qBound(0.1, (width() - kHeaderW - 40) / dur, 2000.0);
     m_scrollT = 0;
     updateScrollbars();
     update();
@@ -1113,6 +1255,18 @@ void TimelineView::contextMenuEvent(QContextMenuEvent *e) {
     }
 
     // empty area / header
+    QAction *closeGap = nullptr;
+    const double gapT = timeAt(e->pos().x());
+    if (hit.track && e->pos().x() >= kHeaderW) {
+        // is there a clip before and after this empty spot?
+        bool before = false, after = false;
+        for (const Clip &c : hit.track->clips) {
+            if (c.end() <= gapT + 1e-6) before = true;
+            if (c.start >= gapT - 1e-6) after = true;
+        }
+        if (after && (before || gapT > 1e-6))
+            closeGap = menu.addAction(tr("Close Gap (Ripple)"));
+    }
     QAction *addV = menu.addAction(tr("Add Video Track"));
     QAction *addA = menu.addAction(tr("Add Audio Track"));
     QAction *delTrack = nullptr;
@@ -1123,7 +1277,9 @@ void TimelineView::contextMenuEvent(QContextMenuEvent *e) {
     paste->setEnabled(m_doc->canPaste());
     QAction *chosen = menu.exec(e->globalPos());
     if (!chosen) return;
-    if (chosen == addV) m_doc->addTrack(s->id, TrackType::Video);
+    if (closeGap && chosen == closeGap)
+        m_doc->closeGap(s->id, hit.type, hit.trackIdx, gapT);
+    else if (chosen == addV) m_doc->addTrack(s->id, TrackType::Video);
     else if (chosen == addA) m_doc->addTrack(s->id, TrackType::Audio);
     else if (delTrack && chosen == delTrack)
         m_doc->removeTrack(s->id, hit.type, hit.trackIdx);
@@ -1247,8 +1403,8 @@ void TimelineView::dropEvent(QDropEvent *e) {
 
 // ------------------------------------------------------------------- scrolling
 void TimelineView::resizeEvent(QResizeEvent *) {
-    m_hbar->setGeometry(kHeaderW, height() - 12, width() - kHeaderW - 12, 12);
-    m_vbar->setGeometry(width() - 12, kRulerH, 12, height() - kRulerH - 12);
+    m_hbar->setGeometry(kHeaderW, height() - 14, width() - kHeaderW - 12, 14);
+    m_vbar->setGeometry(width() - 12, kRulerH, 12, height() - kRulerH - 14);
     updateScrollbars();
 }
 
@@ -1257,12 +1413,9 @@ void TimelineView::leaveEvent(QEvent *) { setCursor(Qt::ArrowCursor); }
 void TimelineView::updateScrollbars() {
     Sequence *s = seq();
     const double dur = s ? s->duration() : 0;
-    const double maxT = dur + 120.0;
-    m_hbar->blockSignals(true);
-    m_hbar->setRange(0, int(maxT * 1000));
-    m_hbar->setPageStep(int((width() - kHeaderW) / m_pxPerSec * 1000));
-    m_hbar->setValue(int(m_scrollT * 1000));
-    m_hbar->blockSignals(false);
+    const double viewLen = qMax(0.05, (width() - kHeaderW) / m_pxPerSec);
+    const double total = qMax(dur + 60.0, m_scrollT + viewLen);
+    m_hbar->setView(total, m_scrollT, viewLen);
 
     int totalH = kRulerH + kGap;
     if (s) {
@@ -1282,10 +1435,11 @@ void TimelineView::ensurePlayheadVisible() {
     if (!s || m_drag != Drag::None) return;
     const int x = xAt(m_doc->playhead(s->id));
     if (x > width() - 30) {
-        m_scrollT = m_doc->playhead(s->id) - (width() - kHeaderW) * 0.15 / m_pxPerSec;
-        m_hbar->setValue(int(m_scrollT * 1000));
+        m_scrollT = qMax(0.0, m_doc->playhead(s->id) -
+                                  (width() - kHeaderW) * 0.15 / m_pxPerSec);
+        updateScrollbars();
     } else if (x < kHeaderW) {
         m_scrollT = qMax(0.0, m_doc->playhead(s->id) - 0.5);
-        m_hbar->setValue(int(m_scrollT * 1000));
+        updateScrollbars();
     }
 }

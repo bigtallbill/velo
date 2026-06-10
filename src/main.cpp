@@ -44,6 +44,23 @@ static int selftest() {
     // exercise editing ops
     doc.splitAt(seqId, 2.0, false);
     doc.addTextClip(seqId, 2, 0.5);
+    {
+        // close-gap regression: move the 2nd A/V pair right, close the gap
+        Sequence *sq = doc.project().sequenceById(seqId);
+        Clip *v1 = &sq->videoTracks[0].clips[1];
+        const double oldStart = v1->start;
+        for (Clip *c : {&sq->videoTracks[0].clips[1], &sq->audioTracks[0].clips[1]})
+            c->start += 5.0;
+        doc.closeGap(seqId, TrackType::Video, 0, oldStart + 2.5);
+        sq = doc.project().sequenceById(seqId);
+        const double vs = sq->videoTracks[0].clips[1].start;
+        const double as = sq->audioTracks[0].clips[1].start;
+        if (std::abs(vs - oldStart) > 1e-6 || std::abs(as - oldStart) > 1e-6) {
+            fprintf(stderr, "selftest: closeGap failed (v=%.3f a=%.3f want %.3f)\n",
+                    vs, as, oldStart);
+            return 1;
+        }
+    }
 
     Compositor comp(&doc.project(), doc.mutex());
     QImage frame = comp.renderFrame(seqId, 1.0, 0.5);

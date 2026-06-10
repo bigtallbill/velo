@@ -489,7 +489,15 @@ void Document::deleteClips(const QString &seqId, const QSet<quint64> &idsIn,
                     const double gapStart = track.clips[i].start;
                     const double gapLen = track.clips[i].duration;
                     track.clips.removeAt(i--);
-                    if (ripple) {
+                    // ripple only when the clip is really sandwiched between
+                    // clips on its track; otherwise it is a plain delete
+                    bool before = false, after = false;
+                    for (const auto &c : track.clips) {
+                        if (ids.contains(c.id)) continue;
+                        if (c.end() <= gapStart + 1e-6) before = true;
+                        if (c.start >= gapStart + gapLen - 1e-6) after = true;
+                    }
+                    if (ripple && before && after) {
                         for (auto &c : track.clips)
                             if (c.start >= gapStart + gapLen - 1e-6)
                                 c.start -= gapLen;
@@ -616,6 +624,80 @@ void Document::setClipSpeed(const QString &seqId, quint64 id, double speed) {
         }
     }
     notifySequenceChanged(seqId);
+}
+
+void Document::closeGap(const QString &seqId, TrackType type, int trackIdx,
+                        double t) {
+    beginUndoStep();
+    {
+        QMutexLocker lock(&m_mutex);
+        Sequence *seq = m_project.sequenceById(seqId);
+        Track *track = seq ? seq->track(type, trackIdx) : nullptr;
+        if (!track || track->locked) return;
+        double prevEnd = 0, nextStart = 1e18;
+        for (const Clip &c : track->clips) {
+            if (c.end() <= t + 1e-6) prevEnd = qMax(prevEnd, c.end());
+            if (c.start >= t - 1e-6) nextStart = qMin(nextStart, c.start);
+        }
+        if (nextStart > 1e17 || nextStart <= prevEnd + 1e-6) return;
+        double shift = nextStart - prevEnd;
+
+        // ripple every unlocked track so linked A/V stays in sync; clamp the
+        // shift so moving clips never collide with material that stays put
+        for (const auto *list : {&seq->videoTracks, &seq->audioTracks}) {
+            for (const auto &tr : *list) {
+                if (tr.locked) continue;
+                double stayEnd = 0, moveStart = 1e18;
+                for (const Clip &c : tr.clips) {
+                    if (c.start >= nextStart - 1e-6)
+                        moveStart = qMin(moveStart, c.start);
+                    else
+                        stayEnd = qMax(stayEnd, c.end());
+                }
+                if (moveStart < 1e17) shift = qMin(shift, moveStart - stayEnd);
+            }
+        }
+        if (shift <= 1e-6) return;
+        for (auto *list : {&seq->videoTracks, &seq->audioTracks})
+            for (auto &tr : *list) {
+                if (tr.locked) continue;
+                for (Clip &c : tr.clips)
+                    if (c.start >= nextStart - 1e-6) c.start -= shift;
+                tr.sortClips();
+            }
+    }
+    notifySequenceChanged(seqId);
+}
+
+void Document::renameSequence(const QString &seqId, const QString &name) {
+    if (name.trimmed().isEmpty()) return;
+    beginUndoStep();
+    {
+        QMutexLocker lock(&m_mutex);
+        Sequence *seq = m_project.sequenceById(seqId);
+        if (!seq) return;
+        seq->name = name.trimmed();
+        // nested clips referencing this sequence show its name
+        for (auto &s : m_project.sequences)
+            for (auto &t : s.videoTracks)
+                for (auto &c : t.clips)
+                    if (c.type == ClipType::Nested && c.mediaId == seqId)
+                        c.name = seq->name;
+    }
+    emit sequenceListChanged();
+    notifySequenceChanged(seqId);
+}
+
+void Document::renameMedia(const QString &mediaId, const QString &name) {
+    if (name.trimmed().isEmpty()) return;
+    beginUndoStep();
+    {
+        QMutexLocker lock(&m_mutex);
+        MediaItem *m = m_project.mediaById(mediaId);
+        if (!m) return;
+        m->name = name.trimmed();
+    }
+    emit mediaChanged();
 }
 
 void Document::addTrack(const QString &seqId, TrackType type) {
