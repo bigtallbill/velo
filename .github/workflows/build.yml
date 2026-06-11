@@ -102,6 +102,9 @@ jobs:
           arch: win64_msvc2022_64
           modules: qtmultimedia
           cache: true
+          # Qt 6.11 moved the Windows repo metadata into per-arch subdirs;
+          # released aqtinstall (3.3.0) only knows the old layout.
+          aqtversion: '@git+https://github.com/miurahr/aqtinstall.git@8d961e61720b3c06583517fbc68d57ec0a4e9f95'
       - uses: ilammy/msvc-dev-cmd@v1
       - name: Install ninja
         run: choco install -y ninja
