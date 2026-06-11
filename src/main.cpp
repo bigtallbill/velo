@@ -28,7 +28,7 @@ static int selftest() {
     QDir().mkpath(dir);
     const QString vid = dir + "/test.mp4";
     QProcess gen;
-    gen.start("ffmpeg",
+    gen.start(Exporter::ffmpegBinary(),
               {"-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30",
                "-f", "lavfi", "-i", "sine=frequency=440", "-t", "4", "-c:v",
                "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", vid});

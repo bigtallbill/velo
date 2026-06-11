@@ -1,0 +1,94 @@
+# Multi-platform builds. The Linux job produces a self-contained AppImage;
+# Windows/macOS jobs produce bundles with Qt + FFmpeg included (no installs
+# needed by users beyond extracting the artifact).
+name: build
+on: [push, workflow_dispatch]
+
+jobs:
+  linux-appimage:
+    runs-on: ubuntu-22.04   # old glibc = runs on most distros
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build cmake qt6-base-dev \
+            qt6-multimedia-dev qt6-svg-dev libqt6svg6-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
+            libswresample-dev ffmpeg patchelf file
+      - name: Build
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          ninja -C build
+          QT_QPA_PLATFORM=offscreen ./build/velo --selftest
+      - name: Bundle AppImage
+        run: |
+          curl -sLo linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl -sLo linuxdeploy-plugin-qt https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy linuxdeploy-plugin-qt
+          ./linuxdeploy --appdir AppDir -e build/velo -e "$(command -v ffmpeg)" \
+            -d dist/velo.desktop -i dist/velo.svg --plugin qt --output appimage
+          mv Velo*.AppImage Velo-x86_64.AppImage
+      - uses: actions/upload-artifact@v4
+        with: { name: Velo-linux-x86_64, path: Velo-x86_64.AppImage }
+
+  windows:
+    runs-on: windows-latest
+    defaults: { run: { shell: "msys2 {0}" } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-toolchain mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-qt6-multimedia mingw-w64-ucrt-x86_64-qt6-svg
+            mingw-w64-ucrt-x86_64-ffmpeg
+      - name: Build
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          ninja -C build
+      - name: Bundle
+        run: |
+          mkdir -p Velo-windows
+          cp build/velo.exe Velo-windows/
+          cp /ucrt64/bin/ffmpeg.exe Velo-windows/
+          windeployqt6 Velo-windows/velo.exe
+          # copy remaining non-Qt DLL dependencies
+          for f in Velo-windows/velo.exe Velo-windows/ffmpeg.exe; do
+            ldd "$f" | awk '/ucrt64/ {print $3}'
+          done | sort -u | xargs -r -I{} cp -n {} Velo-windows/
+      - uses: actions/upload-artifact@v4
+        with: { name: Velo-windows-x86_64, path: Velo-windows }
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: brew install qt ffmpeg ninja pkg-config
+      - name: Build
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+          ninja -C build
+      - name: Bundle
+        run: |
+          mkdir -p Velo.app/Contents/MacOS Velo.app/Contents/Resources
+          cp build/velo Velo.app/Contents/MacOS/
+          cp "$(command -v ffmpeg)" Velo.app/Contents/MacOS/
+          cat > Velo.app/Contents/Info.plist <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleExecutable</key><string>velo</string>
+            <key>CFBundleIdentifier</key><string>org.velo.editor</string>
+            <key>CFBundleName</key><string>Velo</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+          </dict></plist>
+          PLIST
+          "$(brew --prefix qt)/bin/macdeployqt" Velo.app -executable=Velo.app/Contents/MacOS/ffmpeg
+      - uses: actions/upload-artifact@v4
+        with: { name: Velo-macos, path: Velo.app }

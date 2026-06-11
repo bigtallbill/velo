@@ -1,12 +1,23 @@
 #include "engine/Exporter.h"
 #include "engine/AudioEngine.h"
 #include "engine/Compositor.h"
+#include <QCoreApplication>
 #include <QDataStream>
 #include <QDir>
 #include <QFile>
 #include <QMutexLocker>
 #include <QProcess>
 #include <QTemporaryFile>
+
+// Bundled builds (AppImage/portable) ship an ffmpeg binary next to velo so
+// nothing needs to be installed; otherwise fall back to the system PATH.
+QString Exporter::ffmpegBinary() {
+    const QString env = qEnvironmentVariable("VELO_FFMPEG");
+    if (!env.isEmpty() && QFile::exists(env)) return env;
+    const QString beside = QCoreApplication::applicationDirPath() + "/ffmpeg";
+    if (QFile::exists(beside)) return beside;
+    return QStringLiteral("ffmpeg");
+}
 
 Exporter::Exporter(Project *project, QRecursiveMutex *mutex, const QString &seqId,
                    const ExportSettings &settings, QObject *parent)
@@ -19,7 +30,7 @@ QStringList Exporter::availableEncoders() {
     if (probed) return cached;
     probed = true;
     QProcess p;
-    p.start("ffmpeg", {"-hide_banner", "-encoders"});
+    p.start(ffmpegBinary(), {"-hide_banner", "-encoders"});
     p.waitForFinished(5000);
     const QString out = QString::fromUtf8(p.readAllStandardOutput());
     for (const QString &enc : {"libx264", "libx265", "h264_nvenc", "hevc_nvenc",
@@ -119,7 +130,7 @@ void Exporter::run() {
 
     QProcess ff;
     ff.setProcessChannelMode(QProcess::MergedChannels);
-    ff.start("ffmpeg", args);
+    ff.start(ffmpegBinary(), args);
     if (!ff.waitForStarted(5000)) {
         emit finished(false, tr("Could not start ffmpeg"));
         return;

@@ -5,7 +5,12 @@ and FFmpeg**. Velo follows the familiar Premiere-style layout — project bin,
 media-preview/sequence monitors, effect controls and a multi-track timeline — while
 staying small, hackable and quick.
 
-![layout](dist/velo.svg)
+![Velo editing the showcase project](dist/screenshot.png)
+
+*The bundled showcase project: nested sequences, picture-in-picture with
+keyframed rotation + Gaussian Blur + Vignette, titles with outlines, cross
+dissolves and fades, audio waveforms with volume keyframes — generate it
+yourself with `dist/demo/make_demo.sh`.*
 
 ## Features
 
@@ -58,6 +63,22 @@ staying small, hackable and quick.
   (`Ctrl+Z` / `Ctrl+Shift+Z`); unsaved-changes guard.
 - **Custom keybindings** — every action is rebindable in *Edit ▸ Keyboard
   Shortcuts*; stored per-user.
+
+## Download (no installation required)
+
+Prebuilt, fully self-contained Linux x86_64 binaries live in
+[`releases/`](releases/) (stored with Git LFS) — Qt, FFmpeg libraries **and
+the `ffmpeg` export binary** are bundled, so nothing else needs to be
+installed:
+
+- **`Velo-x86_64.AppImage`** — `chmod +x` and run. (On systems without
+  FUSE: `./Velo-x86_64.AppImage --appimage-extract-and-run`.)
+- **`velo-x86_64-portable.tar.xz`** — extract anywhere and run `./AppRun`.
+
+Requirements: Linux with glibc ≥ 2.39 and an x86-64-v3 CPU (Intel Haswell
+2013+ / AMD Excavator+). Windows and macOS bundles build via the GitHub
+Actions workflow in `.github/workflows/build.yml` (artifacts include Qt +
+FFmpeg the same way).
 
 ## Building
 
@@ -141,7 +162,4 @@ callback and the exporter behind a single recursive mutex; preview requests
 coalesce so scrubbing never queues stale frames, and decoders only seek when
 playback jumps. When one file is needed at two distant positions every frame
 (cross dissolves, footage reused across nests) the cache opens an extra
-decoder "lane" per position so both streams decode sequentially. During
-playback the preview adaptively lowers its resolution when frames exceed the
-frame budget — heavy moments play smoothly instead of stuttering — and
-returns to full quality on pause.
+decoder "lane" per position so both streams decode sequentially.

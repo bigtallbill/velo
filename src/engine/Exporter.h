@@ -30,6 +30,9 @@ public:
     void cancel() { m_cancel.storeRelease(1); }
 
     static QStringList availableEncoders();  // probed once from ffmpeg
+    // The ffmpeg binary to use: $VELO_FFMPEG, one bundled next to the
+    // executable (AppImage/portable builds), or "ffmpeg" from PATH.
+    static QString ffmpegBinary();
 
 signals:
     void progress(int percent, const QString &stage);

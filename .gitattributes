@@ -1,0 +1,2 @@
+releases/*.tar.xz filter=lfs diff=lfs merge=lfs -text
+releases/*.AppImage filter=lfs diff=lfs merge=lfs -text
