@@ -59,8 +59,23 @@ QImage Compositor::renderSequence(const Sequence &seq, double t, double scale,
             int idx = track.indexOf(clip->id);
             if (idx > 0) {
                 const Clip &prev = track.clips[idx - 1];
-                if (prev.enabled && std::abs(prev.end() - clip->start) < 0.05)
-                    drawClip(p, seq, prev, t, scale, 1.0 - f, depth, speedAbs);
+                if (prev.enabled && std::abs(prev.end() - clip->start) < 0.05) {
+                    // video files have handles past the cut (and hold their
+                    // last frame at EOF), but a nested sequence is empty past
+                    // its end — clamp so the dissolve holds its last frame
+                    // instead of blending from black
+                    double pt = t;
+                    if (prev.type == ClipType::Nested) {
+                        if (const Sequence *sub =
+                                m_project->sequenceByIdConst(prev.mediaId)) {
+                            const double srcEnd =
+                                prev.start + (sub->duration() - prev.in) /
+                                                 qMax(1e-9, prev.speed);
+                            pt = qMax(prev.start, qMin(t, srcEnd - 1e-3));
+                        }
+                    }
+                    drawClip(p, seq, prev, pt, scale, 1.0 - f, depth, speedAbs);
+                }
             }
             extra *= f;
         }

@@ -177,6 +177,55 @@ static int selftest() {
         }
     }
     {
+        // cross dissolve across a cut must blend in the outgoing clip
+        // (a black result means the previous clip wasn't drawn)
+        Document d5;
+        const QString s5 = d5.sequenceFromMedia(d5.importMedia({vid}).first());
+        d5.splitAt(s5, 2.0, false);
+        Sequence *sq = d5.project().sequenceById(s5);
+        sq->videoTracks[0].clips[1].transIn = {TransitionType::CrossDissolve,
+                                               1.0};
+        Compositor c5(&d5.project(), d5.mutex());
+        // 20 ms into the dissolve the incoming clip is ~invisible, so the
+        // frame must still show the colorful outgoing testsrc2
+        QImage img = c5.renderFrame(s5, 2.02, 0.5);
+        int peak = 0;
+        for (int y = 0; y < img.height(); y += 8)
+            for (int x = 0; x < img.width(); x += 8) {
+                QRgb px = img.pixel(x, y);
+                peak = qMax(peak, qRed(px) + qGreen(px) + qBlue(px));
+            }
+        if (peak < 120) {
+            fprintf(stderr,
+                    "selftest: cross dissolve fades from black (peak=%d)\n",
+                    peak);
+            return 1;
+        }
+        // same with a *nested* outgoing clip: a nested sequence has no
+        // media past its end, so the dissolve must hold its last frame
+        sq = d5.project().sequenceById(s5);
+        d5.setSelectedClips({sq->videoTracks[0].clips[0].id,
+                             sq->audioTracks[0].clips[0].id});
+        d5.nestClips(s5, d5.selectedClips());
+        sq = d5.project().sequenceById(s5);
+        sq->videoTracks[0].clips[1].transIn = {TransitionType::CrossDissolve,
+                                               1.0};
+        img = c5.renderFrame(s5, 2.02, 0.5);
+        peak = 0;
+        for (int y = 0; y < img.height(); y += 8)
+            for (int x = 0; x < img.width(); x += 8) {
+                QRgb px = img.pixel(x, y);
+                peak = qMax(peak, qRed(px) + qGreen(px) + qBlue(px));
+            }
+        if (peak < 120) {
+            fprintf(stderr,
+                    "selftest: nested cross dissolve fades from black "
+                    "(peak=%d)\n",
+                    peak);
+            return 1;
+        }
+    }
+    {
         // media in/out points trim clips dropped into a sequence
         Document d4;
         const QString mid = d4.importMedia({vid}).first();

@@ -201,6 +201,8 @@ void MainWindow::buildMenus() {
     QToolButton *scrubBtn = m_timeline->audioScrubButton();
     connect(scrubBtn, &QToolButton::toggled, scrubA, &QAction::setChecked);
     connect(scrubA, &QAction::toggled, scrubBtn, &QToolButton::setChecked);
+    connect(m_timeline->addTextButton(), &QToolButton::clicked, this,
+            [this] { addTextAtPlayhead(); });
     QMenu *audioOut = play->addMenu(tr("Audio Output"));
     connect(audioOut, &QMenu::aboutToShow, this, [this, audioOut] {
         audioOut->clear();

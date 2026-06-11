@@ -47,6 +47,7 @@ TimelinePanel::TimelinePanel(Document *doc, QWidget *parent)
     };
     m_selectBtn = mkTool("⬉", tr("Selection tool (V)"), true);
     m_razorBtn = mkTool("✂", tr("Razor tool (C) — click a clip to cut it"), true);
+    m_textBtn = mkTool("T", tr("Add text at the playhead (T)"), false);
     m_magnetBtn = mkTool("🧲", tr("Magnetic snapping (N) — hold Alt to bypass"), true);
     m_scrubBtn = mkTool("🔉", tr("Audio scrubbing — hear the audio under the "
                                  "playhead while dragging it"), true);

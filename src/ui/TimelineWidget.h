@@ -46,6 +46,8 @@ public:
     // toolbar toggle for audible playhead scrubbing (kept in sync with the
     // Playback menu action by MainWindow)
     QToolButton *audioScrubButton() const { return m_scrubBtn; }
+    // toolbar shortcut for the "Add Text at Playhead" action
+    QToolButton *addTextButton() const { return m_textBtn; }
 
 private:
     void rebuildTabs();
@@ -54,6 +56,7 @@ private:
     QTabBar *m_tabs;
     QToolButton *m_magnetBtn = nullptr;
     QToolButton *m_scrubBtn = nullptr;
+    QToolButton *m_textBtn = nullptr;
     QToolButton *m_selectBtn = nullptr;
     QToolButton *m_razorBtn = nullptr;
     bool m_updatingTabs = false;
