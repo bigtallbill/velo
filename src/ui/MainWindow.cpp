@@ -19,7 +19,7 @@
 #include <QToolButton>
 
 MainWindow::MainWindow() {
-    setWindowTitle("Velo");
+    setWindowTitle("Velo " VELO_VERSION);
     resize(1680, 960);
 
     m_bin = new MediaBin(&m_doc);
@@ -254,7 +254,8 @@ void MainWindow::updateTitle() {
     const QString file = m_doc.project().filePath.isEmpty()
                              ? tr("Untitled")
                              : QFileInfo(m_doc.project().filePath).fileName();
-    setWindowTitle(QString("%1%2 — Velo").arg(file, m_doc.dirty() ? "*" : ""));
+    setWindowTitle(QString("%1%2 — Velo " VELO_VERSION)
+                       .arg(file, m_doc.dirty() ? "*" : ""));
 }
 
 bool MainWindow::maybeSave() {

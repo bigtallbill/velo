@@ -8,7 +8,8 @@ Qt6/FFmpeg non-linear video editor. See README.md for features/architecture.
   (must print `selftest: OK`). Run it after engine/model changes.
 - GUI check on this machine: X `:0` has **no window manager**; root-window
   grabs are black. Capture the app window directly:
-  `WID=$(DISPLAY=:0 xdotool search --name "Velo$" | head -1)`
+  `WID=$(DISPLAY=:0 xdotool search --name "Velo" | head -1)`
+  (the window title ends with the version, e.g. "Untitled — Velo 0.0.1")
   `ffmpeg -f x11grab -window_id $WID -i :0 -frames:v 1 shot.png`
   Drive input with `xdotool mousemove --window $WID <x> <y> click 1`
   (coords are window-relative, 1680×960 default size).
@@ -27,3 +28,6 @@ Qt6/FFmpeg non-linear video editor. See README.md for features/architecture.
   UI/serialization/keyframing pick them up automatically.
 - Linked A/V clips share a nonzero `Clip::linkId`; splitting remaps the
   right-hand halves to a fresh linkId.
+- Version lives in `CMakeLists.txt` (`project(Velo VERSION x.y.z)`) only;
+  releases are cut by pushing the matching `v<x.y.z>` tag (CI builds
+  Linux/Windows/macOS bundles and publishes the GitHub release).

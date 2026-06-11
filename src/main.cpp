@@ -338,7 +338,7 @@ int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     app.setApplicationName("Velo");
     app.setOrganizationName("velo");
-    app.setApplicationVersion("1.0.0");
+    app.setApplicationVersion(QStringLiteral(VELO_VERSION));
 
     QCommandLineParser parser;
     parser.addHelpOption();

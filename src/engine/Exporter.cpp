@@ -14,7 +14,11 @@
 QString Exporter::ffmpegBinary() {
     const QString env = qEnvironmentVariable("VELO_FFMPEG");
     if (!env.isEmpty() && QFile::exists(env)) return env;
+#ifdef Q_OS_WIN
+    const QString beside = QCoreApplication::applicationDirPath() + "/ffmpeg.exe";
+#else
     const QString beside = QCoreApplication::applicationDirPath() + "/ffmpeg";
+#endif
     if (QFile::exists(beside)) return beside;
     return QStringLiteral("ffmpeg");
 }

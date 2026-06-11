@@ -1,6 +1,7 @@
 # Velo
 
-A fast, friendly non-linear video editor for Linux, built with **C++20, Qt 6
+A fast, friendly non-linear video editor for Linux, Windows and macOS,
+built with **C++20, Qt 6
 and FFmpeg**. Velo follows the familiar Premiere-style layout — project bin,
 media-preview/sequence monitors, effect controls and a multi-track timeline — while
 staying small, hackable and quick.
@@ -66,19 +67,25 @@ yourself with `dist/demo/make_demo.sh`.*
 
 ## Download (no installation required)
 
-Prebuilt, fully self-contained Linux x86_64 binaries live in
-[`releases/`](releases/) (stored with Git LFS) — Qt, FFmpeg libraries **and
-the `ffmpeg` export binary** are bundled, so nothing else needs to be
+Prebuilt, fully self-contained bundles for **Linux, Windows and macOS** are
+on the [releases page](https://github.com/notune/velo/releases/latest) —
+Qt, the FFmpeg libraries **and the `ffmpeg` export binary** are bundled at
+the exact versions Velo is developed against, so nothing else needs to be
 installed:
 
-- **`Velo-x86_64.AppImage`** — `chmod +x` and run. (On systems without
-  FUSE: `./Velo-x86_64.AppImage --appimage-extract-and-run`.)
-- **`velo-x86_64-portable.tar.xz`** — extract anywhere and run `./AppRun`.
+- **Linux** — `Velo-<ver>-linux-x86_64.AppImage`: `chmod +x` and run (on
+  systems without FUSE add `--appimage-extract-and-run`); or the
+  `-portable.tar.xz`: extract anywhere and run `./AppRun`.
+  Needs glibc ≥ 2.39 (Ubuntu 24.04+, any 2024+ rolling distro).
+- **Windows** — `Velo-<ver>-windows-x86_64.zip`: extract, run `velo.exe`.
+- **macOS (Apple Silicon)** — `Velo-<ver>-macos-arm64.dmg`: drag Velo to
+  Applications. The build is unsigned, so on first launch right-click the
+  app → *Open* (or `xattr -d com.apple.quarantine /Applications/Velo.app`).
 
-Requirements: Linux with glibc ≥ 2.39 and an x86-64-v3 CPU (Intel Haswell
-2013+ / AMD Excavator+). Windows and macOS bundles build via the GitHub
-Actions workflow in `.github/workflows/build.yml` (artifacts include Qt +
-FFmpeg the same way).
+Every bundle is smoke-tested in CI (decode → composite → mix → export) on
+its target platform before a release is published. Versions are pinned in
+`.github/workflows/build.yml`; the app version comes from `CMakeLists.txt`
+and releases are cut by pushing the matching `v<version>` tag.
 
 ## Building
 
