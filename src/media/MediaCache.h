@@ -33,6 +33,9 @@ public:
     // used at extreme playback speeds where every request is a fresh seek
     // and decoding a whole GOP per frame would stall the preview.
     QImage frameAt(double t, int maxW, bool approx = false);
+    // Time of the currently decoded frame (-1e9 before the first decode).
+    // Used by MediaCache to route requests to a well-positioned decoder.
+    double position() const { return m_frameT; }
 
 private:
     bool decodeNext();  // decode one frame into m_frame
@@ -83,6 +86,11 @@ private:
 
 // ---------------------------------------------------------------------------
 // Per-render-thread pool of decoders + static image / SVG cache.
+// A file may get several decoder "lanes": when the same media is needed at
+// two distant positions every frame (cross dissolves between two cuts,
+// nested sequences reusing footage, picture-in-picture), one decoder would
+// seek + redecode a GOP twice per frame. Each lane stays near its own
+// position, so both streams decode sequentially.
 class MediaCache {
 public:
     QImage videoFrame(const QString &path, double t, int maxW,
@@ -99,7 +107,7 @@ private:
         std::shared_ptr<VideoDecoder> dec;
         qint64 lastUse = 0;
     };
-    QHash<QString, Entry> m_decoders;
+    QHash<QString, QVector<Entry>> m_decoders;  // path -> lanes
     QHash<QString, QImage> m_stills;
     qint64 m_tick = 0;
     int m_epoch = 0;

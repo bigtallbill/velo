@@ -31,17 +31,17 @@ void AudioMixer::mix(const QString &seqId, double t, int nFrames, float *out) {
     for (int i = 0; i < nFrames * 2; ++i) out[i] = qBound(-1.0f, out[i], 1.0f);
 }
 
-AudioReader *AudioMixer::readerFor(const Clip &clip, const QString &path) {
-    auto it = m_readers.find(clip.id);
+AudioReader *AudioMixer::readerFor(quint64 key, const QString &path) {
+    auto it = m_readers.find(key);
     if (it == m_readers.end()) {
         if (m_readers.size() > 32) m_readers.clear();
-        it = m_readers.insert(clip.id, std::make_shared<AudioReader>(path));
+        it = m_readers.insert(key, std::make_shared<AudioReader>(path));
     }
     return it.value().get();
 }
 
 void AudioMixer::mixSequence(const Sequence &seq, double t, int nFrames,
-                             float *out, int depth) {
+                             float *out, int depth, quint64 ctx) {
     if (depth > 8) return;
     const double blockDur = double(nFrames) / kRate;
     QVector<float> clipBuf(nFrames * 2);
@@ -74,17 +74,20 @@ void AudioMixer::mixSequence(const Sequence &seq, double t, int nFrames,
             if (clip.type == ClipType::Nested) {
                 const Sequence *sub = m_project->sequenceByIdConst(clip.mediaId);
                 if (!sub) continue;
+                const quint64 subCtx = ctx * 1000003ULL + clip.id;
                 if (varispeed) {
                     srcBuf.resize(nSrc * 2);
                     std::fill(srcBuf.begin(), srcBuf.end(), 0.0f);
-                    mixSequence(*sub, srcT, nSrc, srcBuf.data(), depth + 1);
+                    mixSequence(*sub, srcT, nSrc, srcBuf.data(), depth + 1,
+                                subCtx);
                 } else {
-                    mixSequence(*sub, srcT, n, dst, depth + 1);
+                    mixSequence(*sub, srcT, n, dst, depth + 1, subCtx);
                 }
             } else if (clip.type == ClipType::Audio) {
                 const MediaItem *m = m_project->mediaByIdConst(clip.mediaId);
                 if (!m || m->offline) continue;
-                AudioReader *r = readerFor(clip, m->path);
+                AudioReader *r =
+                    readerFor(ctx * 1000003ULL + clip.id, m->path);
                 if (varispeed) {
                     srcBuf.resize(nSrc * 2);
                     r->read(srcT, nSrc, srcBuf.data());

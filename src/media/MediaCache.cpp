@@ -342,25 +342,55 @@ void MediaCache::checkEpoch() {
 QImage MediaCache::videoFrame(const QString &path, double t, int maxW,
                               bool approx) {
     checkEpoch();
-    auto it = m_decoders.find(path);
-    if (it == m_decoders.end()) {
-        if (m_decoders.size() >= 12) {  // evict least recently used decoder
-            QString lru;
-            qint64 best = INT64_MAX;
+    // pick the lane that can serve t without a seek: at/behind t and close
+    // enough to decode forward (mirrors VideoDecoder's 3 s seek threshold)
+    auto &lanes = m_decoders[path];
+    int best = -1;
+    double bestScore = 1e18;
+    bool needSeek = true;
+    for (int i = 0; i < lanes.size(); ++i) {
+        if (!lanes[i].dec->ok()) {  // broken file: don't spawn more lanes
+            best = i;
+            needSeek = false;
+            break;
+        }
+        const double d = t - lanes[i].dec->position();
+        const bool seq = d >= -1e-4 && d < 3.0;
+        const double score = seq ? d : 1e6 + std::abs(d);
+        if (score < bestScore) {
+            bestScore = score;
+            best = i;
+            needSeek = !seq;
+        }
+    }
+    if (best < 0 || (needSeek && lanes.size() < 3)) {
+        int total = 0;  // evict the globally least-recently-used lane
+        for (const auto &v : std::as_const(m_decoders)) total += v.size();
+        if (total >= 12) {
+            QString lruPath;
+            int lruIdx = -1;
+            qint64 lruUse = INT64_MAX;
             for (auto e = m_decoders.begin(); e != m_decoders.end(); ++e)
-                if (e.value().lastUse < best) {
-                    best = e.value().lastUse;
-                    lru = e.key();
-                }
-            m_decoders.remove(lru);
+                for (int i = 0; i < e.value().size(); ++i)
+                    if (e.value()[i].lastUse < lruUse) {
+                        lruUse = e.value()[i].lastUse;
+                        lruPath = e.key();
+                        lruIdx = i;
+                    }
+            if (lruIdx >= 0) {
+                m_decoders[lruPath].removeAt(lruIdx);
+                if (m_decoders[lruPath].isEmpty() && lruPath != path)
+                    m_decoders.remove(lruPath);
+            }
         }
         Entry e;
         e.dec = std::make_shared<VideoDecoder>(path);
-        it = m_decoders.insert(path, e);
+        lanes.append(e);
+        best = lanes.size() - 1;
     }
-    it.value().lastUse = ++m_tick;
-    return it.value().dec->ok() ? it.value().dec->frameAt(t, maxW, approx)
-                                : QImage();
+    lanes[best].lastUse = ++m_tick;
+    return lanes[best].dec->ok() ? lanes[best].dec->frameAt(t, maxW, approx)
+                                 : QImage();
 }
 
 QImage MediaCache::stillImage(const QString &path, MediaKind kind, int maxW) {

@@ -1,5 +1,6 @@
 #include "core/Document.h"
 #include "effects/Effects.h"
+#include "media/MediaCache.h"
 #include "engine/AudioEngine.h"
 #include "engine/Compositor.h"
 #include "engine/Exporter.h"
@@ -173,6 +174,26 @@ static int selftest() {
         QImage fast = c3.renderFrame(s3, 0.0001, 0.25);
         if (fast.isNull()) {
             fprintf(stderr, "selftest: 20000%% speed render failed\n");
+            return 1;
+        }
+    }
+    {
+        // decoder lanes: alternating reads at two distant positions of one
+        // file (cross dissolves, reused footage in nests) must not trigger
+        // a seek + GOP redecode on every request
+        MediaCache cache;
+        QElapsedTimer timer;
+        timer.start();
+        bool frames = true;
+        for (int i = 0; i < 15; ++i) {
+            frames &= !cache.videoFrame(vid, 0.2 + i * 0.033, 640).isNull();
+            frames &= !cache.videoFrame(vid, 3.0 + i * 0.033, 640).isNull();
+        }
+        // one shared decoder ping-pongs at ~260 ms here; lanes need ~35 ms
+        if (!frames || timer.elapsed() > 150) {
+            fprintf(stderr,
+                    "selftest: alternating decode too slow (%lld ms, ok=%d)\n",
+                    timer.elapsed(), int(frames));
             return 1;
         }
     }

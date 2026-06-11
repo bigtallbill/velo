@@ -318,6 +318,7 @@ void PreviewWidget::requestRender() {
 void PreviewWidget::setPlaying(bool on) {
     if (m_playing == on) return;
     m_playing = on;
+    m_worker->setAdaptive(on);  // playback may trade resolution for smoothness
     m_playBtn->setText(on ? "⏸" : "▶");
     if (on) {
         const double t = playhead();

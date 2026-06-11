@@ -139,4 +139,9 @@ src/ui        main window, project bin, effects browser, monitors,
 The model is shared between the GUI, the preview render thread, the audio
 callback and the exporter behind a single recursive mutex; preview requests
 coalesce so scrubbing never queues stale frames, and decoders only seek when
-playback jumps.
+playback jumps. When one file is needed at two distant positions every frame
+(cross dissolves, footage reused across nests) the cache opens an extra
+decoder "lane" per position so both streams decode sequentially. During
+playback the preview adaptively lowers its resolution when frames exceed the
+frame budget — heavy moments play smoothly instead of stuttering — and
+returns to full quality on pause.

@@ -20,9 +20,12 @@ public:
     void dropReaders() { m_readers.clear(); }
 
 private:
+    // ctx distinguishes instances of the same nested sequence: two copies
+    // of one nest mix the same inner clip ids at different times, and a
+    // shared reader would re-seek on every block.
     void mixSequence(const Sequence &seq, double t, int nFrames, float *out,
-                     int depth);
-    AudioReader *readerFor(const Clip &clip, const QString &path);
+                     int depth, quint64 ctx = 0);
+    AudioReader *readerFor(quint64 key, const QString &path);
     Project *m_project;
     QRecursiveMutex *m_mutex;
     QHash<quint64, std::shared_ptr<AudioReader>> m_readers;
