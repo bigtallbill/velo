@@ -43,6 +43,9 @@ public:
     bool magnetEnabled() const;
     void toggleMagnet();
     void setRazorTool(bool on);
+    // toolbar toggle for audible playhead scrubbing (kept in sync with the
+    // Playback menu action by MainWindow)
+    QToolButton *audioScrubButton() const { return m_scrubBtn; }
 
 private:
     void rebuildTabs();
@@ -50,6 +53,7 @@ private:
     TimelineView *m_view;
     QTabBar *m_tabs;
     QToolButton *m_magnetBtn = nullptr;
+    QToolButton *m_scrubBtn = nullptr;
     QToolButton *m_selectBtn = nullptr;
     QToolButton *m_razorBtn = nullptr;
     bool m_updatingTabs = false;

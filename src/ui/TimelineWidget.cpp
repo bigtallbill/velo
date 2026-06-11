@@ -11,6 +11,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QScrollBar>
+#include <QSettings>
 #include <QTabBar>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -47,8 +48,12 @@ TimelinePanel::TimelinePanel(Document *doc, QWidget *parent)
     m_selectBtn = mkTool("⬉", tr("Selection tool (V)"), true);
     m_razorBtn = mkTool("✂", tr("Razor tool (C) — click a clip to cut it"), true);
     m_magnetBtn = mkTool("🧲", tr("Magnetic snapping (N) — hold Alt to bypass"), true);
+    m_scrubBtn = mkTool("🔉", tr("Audio scrubbing — hear the audio under the "
+                                 "playhead while dragging it"), true);
     m_selectBtn->setChecked(true);
     m_magnetBtn->setChecked(true);
+    m_scrubBtn->setChecked(
+        QSettings("velo", "velo").value("audio/scrub", true).toBool());
     auto *zoomOut = mkTool("−", tr("Zoom out (-)"), false);
     auto *zoomIn = mkTool("+", tr("Zoom in (+)"), false);
     auto *zoomFit = mkTool("↔", tr("Zoom to fit (\\)"), false);
@@ -968,13 +973,19 @@ void TimelineView::mouseMoveEvent(QMouseEvent *e) {
         m_dragStarted = true;
         const Clip &grab = m_dragOrig[m_activeClip];
         double delta = (mouseT - m_grabDt) - grab.start;
-        // snap whichever edge of the grabbed clip catches a snap point
+        // snap the selection's outer edges — leftmost start / rightmost end
+        // across all dragged tracks — whichever contacts a snap point first
+        double groupStart = 1e18, groupEnd = -1e18;
+        for (const auto &c : m_dragOrig) {
+            groupStart = qMin(groupStart, c.start);
+            groupEnd = qMax(groupEnd, c.end());
+        }
         bool snap1 = false, snap2 = false;
-        const double s1 = snapTime(grab.start + delta, m_dragIds, &snap1);
-        const double d1 = s1 - grab.start;
+        const double s1 = snapTime(groupStart + delta, m_dragIds, &snap1);
+        const double d1 = s1 - groupStart;
         const double ind1 = m_snapIndicator;
-        const double s2 = snapTime(grab.end() + delta, m_dragIds, &snap2);
-        const double d2 = s2 - grab.end();
+        const double s2 = snapTime(groupEnd + delta, m_dragIds, &snap2);
+        const double d2 = s2 - groupEnd;
         if (snap1 && (!snap2 || std::abs(d1 - delta) <= std::abs(d2 - delta))) {
             delta = d1;
             m_snapIndicator = ind1;

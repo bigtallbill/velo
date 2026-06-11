@@ -16,6 +16,7 @@
 #include <QSplitter>
 #include <QStatusBar>
 #include <QTabWidget>
+#include <QToolButton>
 
 MainWindow::MainWindow() {
     setWindowTitle("Velo");
@@ -195,6 +196,11 @@ void MainWindow::buildMenus() {
         QSettings("velo", "velo").setValue("audio/scrub", on);
         m_preview->setAudioScrub(on);
     });
+    // the timeline toolbar has a matching checkbox; keep the two in sync
+    // (setChecked only re-emits on an actual change, so no recursion)
+    QToolButton *scrubBtn = m_timeline->audioScrubButton();
+    connect(scrubBtn, &QToolButton::toggled, scrubA, &QAction::setChecked);
+    connect(scrubA, &QAction::toggled, scrubBtn, &QToolButton::setChecked);
     QMenu *audioOut = play->addMenu(tr("Audio Output"));
     connect(audioOut, &QMenu::aboutToShow, this, [this, audioOut] {
         audioOut->clear();
