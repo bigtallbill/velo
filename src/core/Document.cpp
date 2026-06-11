@@ -476,6 +476,7 @@ void Document::deleteClips(const QString &seqId, const QSet<quint64> &ids,
                            bool ripple) {
     if (ids.isEmpty()) return;
     beginUndoStep();
+    double jumpTo = -1;  // ripple moves the playhead to the closed cut
     {
         QMutexLocker lock(&m_mutex);
         Sequence *seq = m_project.sequenceById(seqId);
@@ -517,6 +518,7 @@ void Document::deleteClips(const QString &seqId, const QSet<quint64> &ids,
                     continue;  // linked pair shares one span
                 lastS = sp.s;
                 lastE = sp.e;
+                jumpTo = jumpTo < 0 ? sp.s : qMin(jumpTo, sp.s);
                 double shift = sp.e - sp.s;
                 for (const auto *list : {&seq->videoTracks, &seq->audioTracks})
                     for (const auto &tr : *list) {
@@ -545,6 +547,7 @@ void Document::deleteClips(const QString &seqId, const QSet<quint64> &ids,
     }
     emit selectionChanged();
     notifySequenceChanged(seqId);
+    if (jumpTo >= 0) setPlayhead(seqId, jumpTo);
 }
 
 QString Document::nestClips(const QString &seqId, const QSet<quint64> &idsIn) {
@@ -603,6 +606,9 @@ QString Document::nestClips(const QString &seqId, const QSet<quint64> &idsIn) {
         for (auto &tr : sub.audioTracks) tr.sortClips();
         m_project.sequences.append(sub);
         subId = sub.id;
+        // the append may reallocate the sequence list — refetch the pointer
+        seq = m_project.sequenceById(seqId);
+        if (!seq) return {};
 
         // replace with one nested clip on the lowest used video track
         int destTrack = 0;
@@ -801,7 +807,7 @@ void Document::removeTrack(const QString &seqId, TrackType type, int idx) {
         Sequence *seq = m_project.sequenceById(seqId);
         if (!seq) return;
         auto &list = type == TrackType::Video ? seq->videoTracks : seq->audioTracks;
-        if (idx < 0 || idx >= list.size() || list.size() <= 1) return;
+        if (idx < 0 || idx >= list.size()) return;  // last track is deletable
         list.removeAt(idx);
     }
     notifySequenceChanged(seqId);

@@ -61,7 +61,13 @@ void AudioMixer::mixSequence(const Sequence &seq, double t, int nFrames,
             const double srcT = clip.sourceTime(tlT);
 
             std::fill(clipBuf.begin(), clipBuf.begin() + n * 2, 0.0f);
-            const bool varispeed = std::abs(clip.speed - 1.0) > 1e-4;
+            // Above 4x, resampling n*speed source frames per block explodes
+            // (20000x nested = millions of frames per callback). Read the
+            // block at the mapped position at 1x instead — sounds like a
+            // fast-forward skip and costs the same as normal playback.
+            const bool skipPreview = clip.speed > 4.0;
+            const bool varispeed =
+                !skipPreview && std::abs(clip.speed - 1.0) > 1e-4;
             const int nSrc = varispeed ? qMax(2, int(n * clip.speed) + 2) : n;
             float *dst = clipBuf.data();
 

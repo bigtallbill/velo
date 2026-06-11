@@ -45,6 +45,7 @@ private:
     double m_wallStart = 0;
     bool m_playing = false;
     bool m_programMode = true;
+    bool m_inTick = false;  // distinguishes our playhead writes from seeks
     QString m_sourceSeqId;
 
     VideoArea *m_video;

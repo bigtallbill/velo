@@ -8,6 +8,7 @@
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QIcon>
 #include <QFile>
@@ -128,6 +129,45 @@ static int selftest() {
     if (peak < 0.01f) {
         fprintf(stderr, "selftest: audio mix silent\n");
         return 1;
+    }
+    {
+        // nesting twice must keep replacing clips in the timeline (the
+        // sequence list reallocates under the hood)
+        Document d3;
+        const QString s3 = d3.sequenceFromMedia(d3.importMedia({vid}).first());
+        for (int round = 0; round < 2; ++round) {
+            Sequence *sq = d3.project().sequenceById(s3);
+            QSet<quint64> all;
+            for (const auto *list : {&sq->videoTracks, &sq->audioTracks})
+                for (const auto &t : *list)
+                    for (const auto &c : t.clips) all.insert(c.id);
+            const QString nid = d3.nestClips(s3, all);
+            sq = d3.project().sequenceById(s3);
+            int found = 0;
+            for (const auto &t : sq->videoTracks)
+                for (const auto &c : t.clips)
+                    if (c.type == ClipType::Nested && c.mediaId == nid) ++found;
+            if (found != 1) {
+                fprintf(stderr,
+                        "selftest: nest round %d lost the timeline clip\n",
+                        round + 1);
+                return 1;
+            }
+        }
+        // extreme speed must not blow up the audio mixer
+        Sequence *sq = d3.project().sequenceById(s3);
+        Clip *nestClip = &sq->videoTracks[0].clips[0];
+        d3.setClipSpeed(s3, nestClip->id, 20000.0);
+        AudioMixer m3(&d3.project(), d3.mutex());
+        QElapsedTimer timer;
+        timer.start();
+        for (int i = 0; i < 20; ++i)
+            m3.mix(s3, i * 0.02, 1024, buf.data());
+        if (timer.elapsed() > 2000) {
+            fprintf(stderr, "selftest: 20000%% speed mix too slow (%lld ms)\n",
+                    timer.elapsed());
+            return 1;
+        }
     }
 
     // save & reload round-trip

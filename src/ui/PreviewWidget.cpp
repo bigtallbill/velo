@@ -85,7 +85,15 @@ PreviewWidget::PreviewWidget(Document *doc, QWidget *parent)
                 if (seqId != monitoredSequence()) return;
                 m_timecode->setText(formatTimecode(
                     t, monitoredSeq() ? monitoredSeq()->fps : 30.0));
-                if (!m_playing) requestRender();
+                if (!m_playing) {
+                    requestRender();
+                } else if (!m_inTick && std::abs(t - m_audio->clock()) > 0.15) {
+                    // user seeked while playing: keep playing from there
+                    m_audio->invalidateReaders();
+                    m_audio->play(seqId, t);
+                    m_wallClock.restart();
+                    m_wallStart = t;
+                }
             });
     connect(doc, &Document::sequenceChanged, this, [this](const QString &seqId) {
         if (seqId == monitoredSequence() && !m_playing) requestRender();
@@ -183,11 +191,15 @@ void PreviewWidget::tick() {
         t = m_wallStart + m_wallClock.elapsed() / 1000.0;
     const double dur = seq->duration();
     if (dur > 0 && t >= dur) {
+        m_inTick = true;
         m_doc->setPlayhead(seq->id, dur);
+        m_inTick = false;
         setPlaying(false);
         return;
     }
+    m_inTick = true;
     m_doc->setPlayhead(seq->id, t);
+    m_inTick = false;
     if (!m_worker->busy())
         m_worker->requestFrame(seq->id, t, renderScale());
 }
