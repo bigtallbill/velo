@@ -1,34 +1,79 @@
 #include "ui/PreviewWidget.h"
 #include "engine/Compositor.h"
 #include "ui/Theme.h"
+#include <QApplication>
 #include <QComboBox>
+#include <QDrag>
+#include <QDragEnterEvent>
 #include <QLabel>
+#include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QSettings>
 #include <QTabBar>
 #include <QToolButton>
 #include <QVBoxLayout>
+
+static const char *kItemMime = "application/x-velo-item";
 
 PreviewWidget::PreviewWidget(Document *doc, QWidget *parent)
     : QWidget(parent), m_doc(doc) {
     m_worker = new RenderWorker(&doc->project(), doc->mutex(), this);
     m_audio = new AudioEngine(&doc->project(), doc->mutex(), this);
     m_worker->start();
+    setAcceptDrops(true);
+    m_audioScrub =
+        QSettings("velo", "velo").value("audio/scrub", true).toBool();
 
     auto *lay = new QVBoxLayout(this);
     lay->setContentsMargins(0, 0, 0, 0);
     lay->setSpacing(0);
 
     m_tabs = new QTabBar;
-    m_tabs->addTab(tr("Source"));
-    m_tabs->addTab(tr("Program"));
+    m_tabs->addTab(tr("Media Preview"));
+    m_tabs->addTab(tr("Sequence"));
     m_tabs->setCurrentIndex(1);
     m_tabs->setExpanding(false);
     m_tabs->setDrawBase(false);
     lay->addWidget(m_tabs);
 
+    // loaded-media picker for the media preview (hidden in sequence mode)
+    m_sourceRow = new QWidget;
+    auto *srcLay = new QHBoxLayout(m_sourceRow);
+    srcLay->setContentsMargins(6, 2, 6, 2);
+    srcLay->setSpacing(4);
+    m_sourceList = new QComboBox;
+    m_sourceList->setToolTip(tr("Media loaded in the preview"));
+    srcLay->addWidget(m_sourceList, 1);
+    auto *unload = new QToolButton;
+    unload->setText("✕");
+    unload->setAutoRaise(true);
+    unload->setToolTip(tr("Unload this media from the preview"));
+    srcLay->addWidget(unload);
+    auto *inBtn = new QToolButton;
+    inBtn->setText("[");
+    inBtn->setAutoRaise(true);
+    inBtn->setToolTip(tr("Set in point at the playhead (I)"));
+    srcLay->addWidget(inBtn);
+    auto *outBtn = new QToolButton;
+    outBtn->setText("]");
+    outBtn->setAutoRaise(true);
+    outBtn->setToolTip(tr("Set out point at the playhead (O)"));
+    srcLay->addWidget(outBtn);
+    auto *clearBtn = new QToolButton;
+    clearBtn->setText(tr("Clear"));
+    clearBtn->setAutoRaise(true);
+    clearBtn->setToolTip(tr("Clear the in/out points"));
+    srcLay->addWidget(clearBtn);
+    m_sourceRow->setVisible(false);
+    lay->addWidget(m_sourceRow);
+
     m_video = new VideoArea(this, doc);
     lay->addWidget(m_video, 1);
+
+    m_sourceBar = new SourceBar(this, doc);
+    m_sourceBar->setVisible(false);
+    lay->addWidget(m_sourceBar);
 
     auto *bar = new QHBoxLayout;
     bar->setContentsMargins(6, 3, 6, 3);
@@ -44,11 +89,11 @@ PreviewWidget::PreviewWidget(Document *doc, QWidget *parent)
     m_timecode->setStyleSheet("font-family: monospace; color: #4f9cf5;");
     bar->addWidget(m_timecode);
     bar->addStretch(1);
-    auto *startBtn = mkBtn("⏮", tr("Go to start (Home)"));
-    auto *backBtn = mkBtn("◀▮", tr("Step one frame back (Left)"));
+    QToolButton *startBtn = m_startBtn = mkBtn("⏮", tr("Go to start (Home)"));
+    QToolButton *backBtn = m_backBtn = mkBtn("◀▮", tr("Step one frame back (Left)"));
     m_playBtn = mkBtn("▶", tr("Play / Pause (Space)"));
-    auto *fwdBtn = mkBtn("▮▶", tr("Step one frame forward (Right)"));
-    auto *endBtn = mkBtn("⏭", tr("Go to end (End)"));
+    QToolButton *fwdBtn = m_fwdBtn = mkBtn("▮▶", tr("Step one frame forward (Right)"));
+    QToolButton *endBtn = m_endBtn = mkBtn("⏭", tr("Go to end (End)"));
     bar->addStretch(1);
     m_quality = new QComboBox;
     m_quality->addItems({tr("Full"), tr("1/2"), tr("1/4"), tr("1/8")});
@@ -68,7 +113,17 @@ PreviewWidget::PreviewWidget(Document *doc, QWidget *parent)
     connect(m_tabs, &QTabBar::currentChanged, this, [this](int idx) {
         setPlaying(false);
         m_programMode = idx == 1;
+        updateSourceUi();
         requestRender();
+    });
+    connect(unload, &QToolButton::clicked, this,
+            &PreviewWidget::unloadCurrentSource);
+    connect(inBtn, &QToolButton::clicked, this, &PreviewWidget::setInPoint);
+    connect(outBtn, &QToolButton::clicked, this, &PreviewWidget::setOutPoint);
+    connect(clearBtn, &QToolButton::clicked, this, &PreviewWidget::clearInOut);
+    connect(m_sourceList, &QComboBox::activated, this, [this](int idx) {
+        const QString id = m_sourceList->itemData(idx).toString();
+        if (!id.isEmpty() && id != m_sourceMediaId) previewMedia(id);
     });
 
     connect(m_worker, &RenderWorker::frameReady, this,
@@ -85,7 +140,10 @@ PreviewWidget::PreviewWidget(Document *doc, QWidget *parent)
                 if (seqId != monitoredSequence()) return;
                 m_timecode->setText(formatTimecode(
                     t, monitoredSeq() ? monitoredSeq()->fps : 30.0));
+                if (!m_programMode) m_sourceBar->update();
                 if (!m_playing) {
+                    // audible scrubbing: hear the audio under the playhead
+                    if (m_audioScrub) m_audio->scrub(seqId, t);
                     requestRender();
                 } else if (!m_inTick && std::abs(t - m_audio->clock()) > 0.15) {
                     // user seeked while playing: keep playing from there
@@ -109,7 +167,24 @@ PreviewWidget::PreviewWidget(Document *doc, QWidget *parent)
     connect(doc, &Document::projectLoaded, this, [this] {
         setPlaying(false);
         m_sourceSeqId.clear();
+        m_sourceMediaId.clear();
+        m_sourceLoaded.clear();
+        updateSourceUi();
         requestRender();
+    });
+    connect(doc, &Document::mediaChanged, this, [this] {
+        m_audio->invalidateReaders();  // files may have been relocated
+        // drop media that no longer exists from the preview list
+        for (int i = m_sourceLoaded.size() - 1; i >= 0; --i)
+            if (!m_doc->project().mediaByIdConst(m_sourceLoaded[i]))
+                m_sourceLoaded.removeAt(i);
+        if (!m_sourceMediaId.isEmpty() && !sourceMedia()) {
+            m_sourceMediaId.clear();
+            m_sourceSeqId.clear();
+            if (!m_sourceLoaded.isEmpty()) previewMedia(m_sourceLoaded.last());
+        }
+        updateSourceUi();
+        if (!m_programMode) requestRender();
     });
 
     m_timer.setInterval(15);
@@ -140,10 +215,95 @@ double PreviewWidget::renderScale() const {
 void PreviewWidget::previewMedia(const QString &mediaId) {
     setPlaying(false);
     m_sourceSeqId = m_doc->ensureSourceSequence(mediaId);
+    if (m_sourceSeqId.isEmpty()) return;
+    m_sourceMediaId = mediaId;
+    if (!m_sourceLoaded.contains(mediaId)) m_sourceLoaded.append(mediaId);
     m_doc->setPlayhead(m_sourceSeqId, 0);
     m_tabs->setCurrentIndex(0);
     m_programMode = false;
+    updateSourceUi();
     requestRender();
+}
+
+void PreviewWidget::unloadCurrentSource() {
+    setPlaying(false);
+    m_sourceLoaded.removeAll(m_sourceMediaId);
+    m_sourceMediaId.clear();
+    m_sourceSeqId.clear();
+    if (!m_sourceLoaded.isEmpty()) {
+        previewMedia(m_sourceLoaded.last());
+    } else {
+        updateSourceUi();
+        requestRender();  // blanks the monitor
+    }
+}
+
+const MediaItem *PreviewWidget::sourceMedia() const {
+    return m_doc->project().mediaByIdConst(m_sourceMediaId);
+}
+
+bool PreviewWidget::sourceIsStill() const {
+    const MediaItem *m = sourceMedia();
+    return m && (m->kind == MediaKind::Image || m->kind == MediaKind::Svg);
+}
+
+void PreviewWidget::updateSourceUi() {
+    const MediaItem *m = sourceMedia();
+    const bool source = !m_programMode;
+    m_sourceRow->setVisible(source && !m_sourceLoaded.isEmpty());
+    // stills have nothing to play or mark in/out on
+    m_sourceBar->setVisible(source && m && !sourceIsStill());
+    const bool canPlay = m_programMode || (m && !sourceIsStill());
+    for (QToolButton *b : {m_playBtn, m_startBtn, m_backBtn, m_fwdBtn, m_endBtn})
+        b->setEnabled(canPlay);
+    m_sourceList->blockSignals(true);
+    m_sourceList->clear();
+    for (const QString &id : std::as_const(m_sourceLoaded)) {
+        const MediaItem *mi = m_doc->project().mediaByIdConst(id);
+        m_sourceList->addItem(mi ? mi->name : id, id);
+    }
+    m_sourceList->setCurrentIndex(m_sourceLoaded.indexOf(m_sourceMediaId));
+    m_sourceList->blockSignals(false);
+    m_sourceBar->update();
+}
+
+void PreviewWidget::setInPoint() {
+    const MediaItem *m = sourceMedia();
+    if (m_programMode || !m || sourceIsStill()) return;
+    const double t = playhead();
+    double out = m->srcOut;
+    if (out >= 0 && out <= t + 0.01) out = -1;  // pushed past the out point
+    m_doc->setMediaInOut(m->id, t, out);
+    m_sourceBar->update();
+}
+
+void PreviewWidget::setOutPoint() {
+    const MediaItem *m = sourceMedia();
+    if (m_programMode || !m || sourceIsStill()) return;
+    const double t = playhead();
+    const double in = m->srcIn < t - 0.01 ? m->srcIn : 0.0;
+    m_doc->setMediaInOut(m->id, in, t);
+    m_sourceBar->update();
+}
+
+void PreviewWidget::clearInOut() {
+    const MediaItem *m = sourceMedia();
+    if (m_programMode || !m) return;
+    m_doc->setMediaInOut(m->id, 0, -1);
+    m_sourceBar->update();
+}
+
+void PreviewWidget::dragEnterEvent(QDragEnterEvent *e) {
+    // drop media from the project panel to load it into the media preview
+    if (QString::fromUtf8(e->mimeData()->data(kItemMime)).startsWith("media:")) {
+        e->setDropAction(Qt::CopyAction);
+        e->accept();
+    }
+}
+
+void PreviewWidget::dropEvent(QDropEvent *e) {
+    const QString ref = QString::fromUtf8(e->mimeData()->data(kItemMime));
+    if (ref.startsWith("media:")) previewMedia(ref.mid(6));
 }
 
 void PreviewWidget::requestRender() {
@@ -175,6 +335,7 @@ void PreviewWidget::setPlaying(bool on) {
 
 void PreviewWidget::playPause() {
     if (monitoredSequence().isEmpty()) return;
+    if (!m_programMode && sourceIsStill()) return;  // stills don't play
     setPlaying(!m_playing);
 }
 
@@ -226,6 +387,103 @@ void PreviewWidget::goToEnd() {
         m_doc->setPlayhead(seq->id, seq->duration());
     }
 }
+
+// ------------------------------------------------------------------ SourceBar
+SourceBar::SourceBar(PreviewWidget *owner, Document *doc)
+    : QWidget(owner), m_owner(owner), m_doc(doc) {
+    setFixedHeight(22);
+    setMouseTracking(true);
+}
+
+double SourceBar::duration() const {
+    const MediaItem *m = m_owner->sourceMedia();
+    return m && m->duration > 0 ? m->duration : 0;
+}
+
+double SourceBar::inPoint() const {
+    const MediaItem *m = m_owner->sourceMedia();
+    return m ? qBound(0.0, m->srcIn, duration()) : 0;
+}
+
+double SourceBar::outPoint() const {
+    const MediaItem *m = m_owner->sourceMedia();
+    const double d = duration();
+    return m && m->srcOut > 0 ? qMin(m->srcOut, d) : d;
+}
+
+int SourceBar::xAt(double t) const {
+    const double d = duration();
+    return d > 0 ? int(4 + t / d * (width() - 8)) : 4;
+}
+
+double SourceBar::timeAt(double x) const {
+    const double d = duration();
+    return d > 0 ? qBound(0.0, (x - 4) / qMax(1, width() - 8) * d, d) : 0;
+}
+
+void SourceBar::paintEvent(QPaintEvent *) {
+    QPainter p(this);
+    p.fillRect(rect(), Theme::panel());
+    if (duration() <= 0) return;
+    const int midY = height() / 2;
+    p.setPen(Theme::border());
+    p.drawLine(4, midY, width() - 4, midY);
+
+    // selected in/out range
+    const int xi = xAt(inPoint()), xo = xAt(outPoint());
+    p.fillRect(QRect(xi, midY - 4, qMax(1, xo - xi), 8),
+               QColor(0x4f, 0x9c, 0xf5, 70));
+    p.setPen(QPen(Theme::accent(), 2));
+    p.drawLine(xi, 3, xi, height() - 3);       // [ bracket
+    p.drawLine(xi, 3, xi + 4, 3);
+    p.drawLine(xi, height() - 3, xi + 4, height() - 3);
+    p.drawLine(xo, 3, xo, height() - 3);       // ] bracket
+    p.drawLine(xo - 4, 3, xo, 3);
+    p.drawLine(xo - 4, height() - 3, xo, height() - 3);
+
+    // playhead
+    const int px = xAt(m_doc->playhead(m_owner->m_sourceSeqId));
+    p.setPen(QPen(QColor(0x57, 0xa0, 0xff), 1.6));
+    p.drawLine(px, 0, px, height());
+}
+
+void SourceBar::mousePressEvent(QMouseEvent *e) {
+    if (e->button() != Qt::LeftButton || duration() <= 0) return;
+    const double x = e->position().x();
+    if (std::abs(x - xAt(inPoint())) < 6) {
+        m_drag = Drag::In;
+    } else if (std::abs(x - xAt(outPoint())) < 6) {
+        m_drag = Drag::Out;
+    } else {
+        m_drag = Drag::Seek;
+        m_doc->setPlayhead(m_owner->m_sourceSeqId, timeAt(x));
+    }
+}
+
+void SourceBar::mouseMoveEvent(QMouseEvent *e) {
+    const double x = e->position().x();
+    if (m_drag == Drag::None) {
+        const bool nearMark = duration() > 0 &&
+                              (std::abs(x - xAt(inPoint())) < 6 ||
+                               std::abs(x - xAt(outPoint())) < 6);
+        setCursor(nearMark ? Qt::SizeHorCursor : Qt::ArrowCursor);
+        return;
+    }
+    const MediaItem *m = m_owner->sourceMedia();
+    if (!m) return;
+    const double t = timeAt(x);
+    if (m_drag == Drag::Seek) {
+        m_doc->setPlayhead(m_owner->m_sourceSeqId, t);
+    } else if (m_drag == Drag::In) {
+        m_doc->setMediaInOut(m->id, qMin(t, outPoint() - 0.05), m->srcOut);
+        update();
+    } else {
+        m_doc->setMediaInOut(m->id, m->srcIn, qMax(t, inPoint() + 0.05));
+        update();
+    }
+}
+
+void SourceBar::mouseReleaseEvent(QMouseEvent *) { m_drag = Drag::None; }
 
 // ------------------------------------------------------------------ VideoArea
 VideoArea::VideoArea(PreviewWidget *owner, Document *doc)
@@ -286,8 +544,8 @@ void VideoArea::paintEvent(QPaintEvent *) {
     } else {
         p.setPen(Theme::textDim());
         p.drawText(rect(), Qt::AlignCenter,
-                   tr("Drop media into the timeline, or double-click a clip\n"
-                      "in the project panel to preview it here"));
+                   tr("Drop media into the timeline, or double-click / drop a\n"
+                      "clip from the project panel to preview it here"));
     }
     QRectF sel;
     Clip *clip;
@@ -312,6 +570,13 @@ void VideoArea::paintEvent(QPaintEvent *) {
 
 void VideoArea::mousePressEvent(QMouseEvent *e) {
     if (e->button() != Qt::LeftButton) return;
+    // in the media preview, dragging the picture carries the media (with its
+    // in/out points) into the timeline
+    if (!m_owner->m_programMode && !m_owner->m_sourceMediaId.isEmpty()) {
+        m_pressPos = e->position();
+        m_sourcePress = true;
+        return;
+    }
     QRectF sel;
     Clip *clip;
     Sequence *seq;
@@ -384,6 +649,20 @@ void VideoArea::mouseDoubleClickEvent(QMouseEvent *e) {
 }
 
 void VideoArea::mouseMoveEvent(QMouseEvent *e) {
+    if (m_sourcePress) {
+        if ((e->buttons() & Qt::LeftButton) &&
+            (e->position() - m_pressPos).manhattanLength() >
+                QApplication::startDragDistance()) {
+            m_sourcePress = false;
+            auto *mime = new QMimeData;
+            mime->setData(kItemMime,
+                          ("media:" + m_owner->m_sourceMediaId).toUtf8());
+            auto *drag = new QDrag(this);
+            drag->setMimeData(mime);
+            drag->exec(Qt::CopyAction);
+        }
+        return;
+    }
     QRectF sel;
     Clip *clip;
     Sequence *seq;
@@ -445,4 +724,5 @@ void VideoArea::mouseReleaseEvent(QMouseEvent *) {
     if (m_drag != DragMode::None && m_undoStarted)
         emit m_doc->selectionChanged();  // sync spinboxes in Effect Controls
     m_drag = DragMode::None;
+    m_sourcePress = false;
 }

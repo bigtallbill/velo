@@ -29,7 +29,10 @@ public:
     ~VideoDecoder();
     bool ok() const { return m_ok; }
     // Frame covering time t, scaled to fit maxW (native size if maxW <= 0).
-    QImage frameAt(double t, int maxW);
+    // approx: accept the nearest keyframe instead of decoding up to t —
+    // used at extreme playback speeds where every request is a fresh seek
+    // and decoding a whole GOP per frame would stall the preview.
+    QImage frameAt(double t, int maxW, bool approx = false);
 
 private:
     bool decodeNext();  // decode one frame into m_frame
@@ -82,11 +85,16 @@ private:
 // Per-render-thread pool of decoders + static image / SVG cache.
 class MediaCache {
 public:
-    QImage videoFrame(const QString &path, double t, int maxW);
+    QImage videoFrame(const QString &path, double t, int maxW,
+                      bool approx = false);
     QImage stillImage(const QString &path, MediaKind kind, int maxW);
     void clear();
+    // Media files changed on disk (e.g. relocated): every cache instance
+    // drops its decoders/stills lazily on next use.
+    static void invalidateAll();
 
 private:
+    void checkEpoch();
     struct Entry {
         std::shared_ptr<VideoDecoder> dec;
         qint64 lastUse = 0;
@@ -94,6 +102,7 @@ private:
     QHash<QString, Entry> m_decoders;
     QHash<QString, QImage> m_stills;
     qint64 m_tick = 0;
+    int m_epoch = 0;
 };
 
 // ---------------------------------------------------------------------------

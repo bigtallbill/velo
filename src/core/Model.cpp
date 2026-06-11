@@ -294,6 +294,8 @@ QJsonObject MediaItem::toJson() const {
     o["fps"] = fps;
     o["hasVideo"] = hasVideo;
     o["hasAudio"] = hasAudio;
+    o["srcIn"] = srcIn;
+    o["srcOut"] = srcOut;
     return o;
 }
 MediaItem MediaItem::fromJson(const QJsonObject &o) {
@@ -308,6 +310,8 @@ MediaItem MediaItem::fromJson(const QJsonObject &o) {
     m.fps = o["fps"].toDouble();
     m.hasVideo = o["hasVideo"].toBool();
     m.hasAudio = o["hasAudio"].toBool();
+    m.srcIn = o["srcIn"].toDouble(0);
+    m.srcOut = o["srcOut"].toDouble(-1);
     return m;
 }
 

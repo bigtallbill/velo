@@ -52,6 +52,11 @@ public:
     // ---- media ------------------------------------------------------------------
     QStringList importMedia(const QStringList &paths);  // returns new ids
     void removeMedia(const QString &id);
+    // Point an (offline or replaced) media item at a different file; keeps
+    // the id and name so all clips referencing it pick up the new file.
+    bool relocateMedia(const QString &id, const QString &path);
+    // In/out points used by the media preview monitor (out < 0 = none).
+    void setMediaInOut(const QString &id, double in, double out);
 
     // ---- sequences ----------------------------------------------------------------
     Sequence *createSequence(const QString &name, int w, int h, double fps);

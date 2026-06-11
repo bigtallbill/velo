@@ -168,6 +168,43 @@ static int selftest() {
                     timer.elapsed());
             return 1;
         }
+        // video at extreme speed renders via nearest-keyframe decoding
+        Compositor c3(&d3.project(), d3.mutex());
+        QImage fast = c3.renderFrame(s3, 0.0001, 0.25);
+        if (fast.isNull()) {
+            fprintf(stderr, "selftest: 20000%% speed render failed\n");
+            return 1;
+        }
+    }
+    {
+        // media in/out points trim clips dropped into a sequence
+        Document d4;
+        const QString mid = d4.importMedia({vid}).first();
+        d4.setMediaInOut(mid, 1.0, 3.0);
+        const QString s4 = d4.createSequence("inout", 640, 360, 30)->id;
+        const QList<quint64> ids =
+            d4.addMediaClip(s4, mid, TrackType::Video, 0, 0.0);
+        const Sequence *sq = d4.project().sequenceByIdConst(s4);
+        const Clip &c = sq->videoTracks[0].clips[0];
+        if (ids.size() != 2 || std::abs(c.in - 1.0) > 1e-6 ||
+            std::abs(c.duration - 2.0) > 1e-6) {
+            fprintf(stderr, "selftest: in/out trim failed (in=%.3f dur=%.3f)\n",
+                    c.in, c.duration);
+            return 1;
+        }
+        // relocating media keeps the id and re-probes the new file
+        const QString vid2 = dir + "/test2.mp4";
+        QFile::remove(vid2);
+        QFile::copy(vid, vid2);
+        if (!d4.relocateMedia(mid, vid2)) {
+            fprintf(stderr, "selftest: relocateMedia failed\n");
+            return 1;
+        }
+        const MediaItem *m = d4.project().mediaByIdConst(mid);
+        if (!m || m->offline || m->path != vid2 || m->duration < 3.0) {
+            fprintf(stderr, "selftest: relocated media is wrong\n");
+            return 1;
+        }
     }
 
     // save & reload round-trip

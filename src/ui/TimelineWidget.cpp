@@ -593,24 +593,34 @@ void TimelineView::paintEvent(QPaintEvent *) {
     p.fillRect(QRect(0, 0, width(), kRulerH), Theme::panel());
     p.setPen(Theme::border());
     p.drawLine(0, kRulerH, width(), kRulerH);
+    // sub-second steps are whole frame counts so labels land exactly on
+    // frame boundaries (otherwise the timecode rounds visibly at high zoom)
+    const double frameDur = 1.0 / qMax(1.0, s->fps);
     const double tickStep = [&] {
-        const double steps[] = {0.04, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30, 60, 120,
-                                300, 600};
+        for (int fr : {1, 2, 5, 10})
+            if (fr * frameDur < 0.5 && fr * frameDur * m_pxPerSec >= 70)
+                return fr * frameDur;
+        const double steps[] = {0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600};
         for (double st : steps)
             if (st * m_pxPerSec >= 70) return st;
         return 600.0;
     }();
+    // minor ticks land on frames when the step is frame-based
+    const int minors = tickStep < 0.5 - 1e-9
+                           ? qMin(5, qRound(tickStep / frameDur))
+                           : 5;
     p.setPen(Theme::textDim());
     QFont f = p.font();
     f.setPixelSize(10);
     p.setFont(f);
-    double t0 = std::floor(qMax(0.0, m_scrollT) / tickStep) * tickStep;
-    for (double t = t0;; t += tickStep) {
+    const qint64 k0 = qint64(std::floor(qMax(0.0, m_scrollT) / tickStep));
+    for (qint64 k = k0;; ++k) {
+        const double t = k * tickStep;  // no float accumulation
         int x = xAt(t);
         if (x > width()) break;
         // minor ticks always — including the partial segment at the left edge
-        for (int m = 1; m < 5; ++m) {
-            int mx = xAt(t + tickStep * m / 5.0);
+        for (int m = 1; m < minors; ++m) {
+            int mx = xAt(t + tickStep * m / minors);
             if (mx >= kHeaderW && mx <= width()) p.drawLine(mx, kRulerH - 3, mx, kRulerH);
         }
         if (x < kHeaderW) continue;
@@ -1426,7 +1436,7 @@ void TimelineView::dragMoveEvent(QDragMoveEvent *e) {
         if (m_dropRef.startsWith("media:")) {
             if (const MediaItem *m =
                     m_doc->project().mediaByIdConst(m_dropRef.mid(6))) {
-                if (m->duration > 0) m_dropDur = m->duration;
+                if (m->duration > 0) m_dropDur = m->trimmedDuration();
                 m_dropType = m->hasVideo ? TrackType::Video : TrackType::Audio;
             }
         } else if (m_dropRef.startsWith("sequence:")) {

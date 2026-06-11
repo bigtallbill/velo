@@ -43,12 +43,19 @@ public:
     bool isPlaying() const { return m_playing; }
     double clock() const;  // current playback time in sequence seconds
     void invalidateReaders();
+    // Play a short burst of audio at t (audible scrubbing while dragging
+    // the playhead). No-op during playback; drops bursts while one is
+    // still sounding so rapid drag events don't pile up.
+    void scrub(const QString &seqId, double t);
 
 private:
     friend class MixDevice;
     AudioMixer m_mixer;
     std::unique_ptr<QAudioSink> m_sink;
     QIODevice *m_device = nullptr;  // owned by this (MixDevice)
+    std::unique_ptr<QAudioSink> m_scrubSink;  // push-mode sink for scrubbing
+    QIODevice *m_scrubIO = nullptr;           // owned by m_scrubSink
+    QByteArray m_scrubDevId;
     QString m_seqId;
     double m_startT = 0;
     bool m_playing = false;

@@ -180,6 +180,21 @@ void MainWindow::buildMenus() {
     makeAction(play, "go_end", tr("Go to End"), QKeySequence(Qt::Key_End),
                [this] { m_preview->goToEnd(); });
     play->addSeparator();
+    makeAction(play, "set_in", tr("Set In Point (Media Preview)"),
+               QKeySequence("I"), [this] { m_preview->setInPoint(); });
+    makeAction(play, "set_out", tr("Set Out Point (Media Preview)"),
+               QKeySequence("O"), [this] { m_preview->setOutPoint(); });
+    makeAction(play, "clear_in_out", tr("Clear In/Out Points"),
+               QKeySequence("Ctrl+Shift+X"), [this] { m_preview->clearInOut(); });
+    play->addSeparator();
+    QAction *scrubA = play->addAction(tr("Audio Scrubbing"));
+    scrubA->setCheckable(true);
+    scrubA->setChecked(
+        QSettings("velo", "velo").value("audio/scrub", true).toBool());
+    connect(scrubA, &QAction::toggled, this, [this](bool on) {
+        QSettings("velo", "velo").setValue("audio/scrub", on);
+        m_preview->setAudioScrub(on);
+    });
     QMenu *audioOut = play->addMenu(tr("Audio Output"));
     connect(audioOut, &QMenu::aboutToShow, this, [this, audioOut] {
         audioOut->clear();

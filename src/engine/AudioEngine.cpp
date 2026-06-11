@@ -168,6 +168,8 @@ QAudioDevice AudioEngine::configuredDevice() {
 
 void AudioEngine::play(const QString &seqId, double t) {
     stop();
+    m_scrubSink.reset();  // cut any scrub burst still sounding
+    m_scrubIO = nullptr;
     m_seqId = seqId;
     m_startT = t;
     QAudioFormat fmt;
@@ -197,6 +199,33 @@ void AudioEngine::stop() {
         m_device = nullptr;
     }
     m_playing = false;
+}
+
+void AudioEngine::scrub(const QString &seqId, double t) {
+    if (m_playing || seqId.isEmpty()) return;
+    const QAudioDevice dev = configuredDevice();
+    if (m_scrubSink && dev.id() != m_scrubDevId) {  // output changed
+        m_scrubSink.reset();
+        m_scrubIO = nullptr;
+    }
+    if (!m_scrubSink) {
+        QAudioFormat fmt;
+        fmt.setSampleRate(AudioMixer::kRate);
+        fmt.setChannelCount(2);
+        fmt.setSampleFormat(QAudioFormat::Float);
+        if (!dev.isFormatSupported(fmt)) return;
+        m_scrubSink = std::make_unique<QAudioSink>(dev, fmt);
+        m_scrubSink->setBufferSize(int(AudioMixer::kRate * 8 * 0.09));  // ~90 ms
+        m_scrubIO = m_scrubSink->start();  // push mode
+        m_scrubDevId = dev.id();
+    }
+    if (!m_scrubIO) return;
+    const int chunk = AudioMixer::kRate * 4 / 100;  // 40 ms per burst
+    const qint64 bytes = qint64(chunk) * 8;
+    if (m_scrubSink->bytesFree() < bytes) return;  // previous burst still sounding
+    QVector<float> buf(chunk * 2);
+    m_mixer.mix(seqId, t, chunk, buf.data());
+    m_scrubIO->write(reinterpret_cast<const char *>(buf.constData()), bytes);
 }
 
 double AudioEngine::clock() const {

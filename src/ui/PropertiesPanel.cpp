@@ -9,6 +9,7 @@
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
@@ -17,6 +18,39 @@
 #include <QSpinBox>
 #include <QToolButton>
 #include <QVBoxLayout>
+
+// -------------------------------------------------------------------- ScrubLabel
+// Parameter label that scrubs its spinbox when dragged horizontally
+// (1 px = one single-step; Shift = 10x).
+class ScrubLabel : public QLabel {
+public:
+    ScrubLabel(const QString &text, QDoubleSpinBox *target)
+        : QLabel(text), m_target(target) {
+        setCursor(Qt::SizeHorCursor);
+        setToolTip(tr("Drag left/right to change the value"));
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent *e) override {
+        if (e->button() == Qt::LeftButton) {
+            m_startX = e->position().x();
+            m_startVal = m_target->value();
+            m_dragging = true;
+        }
+    }
+    void mouseMoveEvent(QMouseEvent *e) override {
+        if (!m_dragging) return;
+        double step = m_target->singleStep();
+        if (e->modifiers() & Qt::ShiftModifier) step *= 10;
+        m_target->setValue(m_startVal + (e->position().x() - m_startX) * step);
+    }
+    void mouseReleaseEvent(QMouseEvent *) override { m_dragging = false; }
+
+private:
+    QDoubleSpinBox *m_target;
+    double m_startX = 0, m_startVal = 0;
+    bool m_dragging = false;
+};
 
 // -------------------------------------------------------------------- ParamRow
 ParamRow::ParamRow(Document *doc, const QString &seqId, const QString &label,
@@ -35,16 +69,16 @@ ParamRow::ParamRow(Document *doc, const QString &seqId, const QString &label,
     m_animBtn->setToolTip(tr("Toggle animation (creates/clears keyframes)"));
     lay->addWidget(m_animBtn);
 
-    auto *lbl = new QLabel(label);
-    lbl->setMinimumWidth(86);
-    lay->addWidget(lbl);
-
     m_spin = new QDoubleSpinBox;
     m_spin->setRange(min, max);
     m_spin->setSingleStep(step);
     m_spin->setDecimals(decimals);
     m_spin->setKeyboardTracking(false);
     m_spin->setMinimumWidth(90);
+
+    auto *lbl = new ScrubLabel(label, m_spin);
+    lbl->setMinimumWidth(86);
+    lay->addWidget(lbl);
     lay->addWidget(m_spin, 1);
 
     m_keyBtn = new QToolButton;

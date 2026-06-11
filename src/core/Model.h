@@ -125,6 +125,16 @@ struct MediaItem {
     double fps = 0;
     bool hasVideo = false, hasAudio = false;
     bool offline = false;
+    // In/out points set in the media preview monitor (source seconds).
+    // srcOut < 0 means "to the end". New timeline clips are trimmed to them.
+    double srcIn = 0, srcOut = -1;
+    // Duration that new clips get: the in/out range (or the full media).
+    double trimmedDuration() const {
+        const double full = duration > 0 ? duration : 5.0;
+        const double in = qBound(0.0, srcIn, full);
+        const double out = srcOut > in ? qMin(srcOut, full) : full;
+        return qMax(0.05, out - in);
+    }
     QJsonObject toJson() const;
     static MediaItem fromJson(const QJsonObject &o);
 };

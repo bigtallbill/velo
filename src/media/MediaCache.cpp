@@ -150,23 +150,35 @@ void VideoDecoder::seekTo(double t) {
     m_frameT = -1e9;
 }
 
-QImage VideoDecoder::frameAt(double t, int maxW) {
+QImage VideoDecoder::frameAt(double t, int maxW, bool approx) {
     if (!m_ok) return QImage();
+    // approx accepts any frame at or shortly before t (the seek target's
+    // keyframe); exact mode wants the frame whose interval covers t
+    const bool covers =
+        m_haveFrame && t >= m_frameT - 1e-4 &&
+        (approx ? t <= m_frameT + 3.0 : t < m_frameT + m_frameDur * 1.5);
     // already converted this frame at a sufficient size?
     if (!m_lastImage.isNull() && std::abs(m_lastImageT - m_frameT) < 1e-9 &&
-        m_haveFrame && t >= m_frameT - 1e-6 && t < m_frameT + m_frameDur * 1.5 &&
+        covers &&
         m_lastImageW >= qMin(maxW > 0 ? maxW : m_codec->width, m_codec->width))
         return m_lastImage;
 
-    const bool behind = m_haveFrame && t < m_frameT - 1e-4;
-    const bool farAhead = !m_haveFrame || t > m_frameT + 3.0;
-    if (behind || farAhead) seekTo(t);
+    if (approx) {
+        if (!covers) {
+            seekTo(t);
+            decodeNext();  // first frame after the seek = the keyframe
+        }
+    } else {
+        const bool behind = m_haveFrame && t < m_frameT - 1e-4;
+        const bool farAhead = !m_haveFrame || t > m_frameT + 3.0;
+        if (behind || farAhead) seekTo(t);
 
-    // decode forward until the frame covers t
-    int guard = 0;
-    while (!m_eof && (!m_haveFrame || m_frameT + m_frameDur <= t + 1e-6)) {
-        if (!decodeNext()) break;
-        if (++guard > 5000) break;  // corrupt stream safety
+        // decode forward until the frame covers t
+        int guard = 0;
+        while (!m_eof && (!m_haveFrame || m_frameT + m_frameDur <= t + 1e-6)) {
+            if (!decodeNext()) break;
+            if (++guard > 5000) break;  // corrupt stream safety
+        }
     }
     if (!m_haveFrame) return m_lastImage;  // EOF: hold last frame
 
@@ -315,7 +327,21 @@ void AudioReader::read(double t, int nFrames, float *out) {
 }
 
 // ----------------------------------------------------------------- MediaCache
-QImage MediaCache::videoFrame(const QString &path, double t, int maxW) {
+static QAtomicInt s_cacheEpoch{0};
+
+void MediaCache::invalidateAll() { s_cacheEpoch.fetchAndAddRelaxed(1); }
+
+void MediaCache::checkEpoch() {
+    const int now = s_cacheEpoch.loadRelaxed();
+    if (now != m_epoch) {
+        clear();
+        m_epoch = now;
+    }
+}
+
+QImage MediaCache::videoFrame(const QString &path, double t, int maxW,
+                              bool approx) {
+    checkEpoch();
     auto it = m_decoders.find(path);
     if (it == m_decoders.end()) {
         if (m_decoders.size() >= 12) {  // evict least recently used decoder
@@ -333,10 +359,12 @@ QImage MediaCache::videoFrame(const QString &path, double t, int maxW) {
         it = m_decoders.insert(path, e);
     }
     it.value().lastUse = ++m_tick;
-    return it.value().dec->ok() ? it.value().dec->frameAt(t, maxW) : QImage();
+    return it.value().dec->ok() ? it.value().dec->frameAt(t, maxW, approx)
+                                : QImage();
 }
 
 QImage MediaCache::stillImage(const QString &path, MediaKind kind, int maxW) {
+    checkEpoch();
     const QString key = path + "|" + QString::number(maxW);
     auto it = m_stills.find(key);
     if (it != m_stills.end()) return it.value();

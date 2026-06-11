@@ -34,7 +34,7 @@ QSizeF Compositor::clipNativeSize(const Project &p, const Sequence &seq,
 }
 
 QImage Compositor::renderSequence(const Sequence &seq, double t, double scale,
-                                  int depth, bool opaqueBg) {
+                                  int depth, bool opaqueBg, double speedAbs) {
     const int w = qMax(2, int(seq.width * scale)) & ~1;
     const int h = qMax(2, int(seq.height * scale)) & ~1;
     QImage canvas(w, h, QImage::Format_ARGB32_Premultiplied);
@@ -60,25 +60,27 @@ QImage Compositor::renderSequence(const Sequence &seq, double t, double scale,
             if (idx > 0) {
                 const Clip &prev = track.clips[idx - 1];
                 if (prev.enabled && std::abs(prev.end() - clip->start) < 0.05)
-                    drawClip(p, seq, prev, t, scale, 1.0 - f, depth);
+                    drawClip(p, seq, prev, t, scale, 1.0 - f, depth, speedAbs);
             }
             extra *= f;
         }
-        drawClip(p, seq, *clip, t, scale, extra, depth);
+        drawClip(p, seq, *clip, t, scale, extra, depth, speedAbs);
     }
     p.end();
     return canvas;
 }
 
 QImage Compositor::clipSource(const Sequence &seq, const Clip &clip, double t,
-                              double scale, int depth) {
+                              double scale, int depth, double speedAbs) {
     const double srcT = clip.sourceTime(t);
     const double local = clip.clipLocal(t);
+    const double effSpeed = speedAbs * std::abs(clip.speed);
     QImage img;
     switch (clip.type) {
     case ClipType::Nested: {
         const Sequence *sub = m_project->sequenceByIdConst(clip.mediaId);
-        if (sub) img = renderSequence(*sub, srcT, scale, depth + 1, false);
+        if (sub)
+            img = renderSequence(*sub, srcT, scale, depth + 1, false, effSpeed);
         break;
     }
     case ClipType::Text:
@@ -96,7 +98,7 @@ QImage Compositor::clipSource(const Sequence &seq, const Clip &clip, double t,
         if (m->kind == MediaKind::Image || m->kind == MediaKind::Svg)
             img = m_cache.stillImage(m->path, m->kind, maxW);
         else
-            img = m_cache.videoFrame(m->path, srcT, maxW);
+            img = m_cache.videoFrame(m->path, srcT, maxW, effSpeed > 100.0);
         break;
     }
     default:
@@ -127,8 +129,9 @@ QImage Compositor::clipSource(const Sequence &seq, const Clip &clip, double t,
 }
 
 void Compositor::drawClip(QPainter &p, const Sequence &seq, const Clip &clip,
-                          double t, double scale, double extraOpacity, int depth) {
-    QImage src = clipSource(seq, clip, t, scale, depth);
+                          double t, double scale, double extraOpacity, int depth,
+                          double speedAbs) {
+    QImage src = clipSource(seq, clip, t, scale, depth, speedAbs);
     if (src.isNull()) return;
 
     const double local = clip.clipLocal(t);

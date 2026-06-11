@@ -23,13 +23,16 @@ public:
     MediaCache &cache() { return m_cache; }
 
 private:
+    // speedAbs: accumulated |speed| of the enclosing clip chain — past
+    // ~100x exact decoding is pointless (every frame is a fresh seek), so
+    // decoders switch to nearest-keyframe mode.
     QImage renderSequence(const Sequence &seq, double t, double scale,
-                          int depth, bool opaqueBg);
+                          int depth, bool opaqueBg, double speedAbs = 1.0);
     // Decoded source frame with effects applied (no transform yet).
     QImage clipSource(const Sequence &seq, const Clip &clip, double t,
-                      double scale, int depth);
+                      double scale, int depth, double speedAbs);
     void drawClip(QPainter &p, const Sequence &seq, const Clip &clip, double t,
-                  double scale, double extraOpacity, int depth);
+                  double scale, double extraOpacity, int depth, double speedAbs);
     QImage renderText(const TextStyle &style, double scale);
 
     Project *m_project;

@@ -232,6 +232,36 @@ void Document::removeMedia(const QString &id) {
     for (const auto &s : m_project.sequences) emit sequenceChanged(s.id);
 }
 
+bool Document::relocateMedia(const QString &id, const QString &path) {
+    MediaItem probed;
+    if (!probeMedia(path, probed)) return false;
+    beginUndoStep();
+    {
+        QMutexLocker lock(&m_mutex);
+        MediaItem *m = m_project.mediaById(id);
+        if (!m) return false;
+        // swap the file underneath, keep the identity and markers
+        probed.id = m->id;
+        probed.name = m->name;
+        probed.srcIn = m->srcIn;
+        probed.srcOut = m->srcOut;
+        *m = probed;
+    }
+    MediaCache::invalidateAll();  // drop decoders bound to the old file
+    emit mediaChanged();
+    for (const auto &s : m_project.sequences) emit sequenceChanged(s.id);
+    return true;
+}
+
+void Document::setMediaInOut(const QString &id, double in, double out) {
+    QMutexLocker lock(&m_mutex);
+    MediaItem *m = m_project.mediaById(id);
+    if (!m) return;
+    m->srcIn = qMax(0.0, in);
+    m->srcOut = out;
+    m_dirty = true;
+}
+
 // ---------------------------------------------------------------- sequences
 Sequence *Document::createSequence(const QString &name, int w, int h, double fps) {
     QString id;
@@ -345,12 +375,20 @@ QList<quint64> Document::addMediaClip(const QString &seqId, const QString &media
         const bool wantVideo = m->hasVideo;
         const bool wantAudio = m->hasAudio;
         quint64 link = (wantVideo && wantAudio) ? m_project.takeClipId() : 0;
+        // media-preview in/out points trim the new clip (timed media only)
+        auto applyInOut = [&](Clip &c) {
+            if (m->kind != MediaKind::AV && m->kind != MediaKind::Audio) return;
+            if (m->duration <= 0) return;
+            c.in = qBound(0.0, m->srcIn, m->duration);
+            c.duration = m->trimmedDuration();
+        };
         if (wantVideo) {
             int vIdx = dropType == TrackType::Video ? trackIdx : 0;
             ensureTrackCount(*seq, TrackType::Video, vIdx + 1);
             Clip c = makeClipFromMedia(
                 *m, m->kind == MediaKind::AV ? ClipType::Video : ClipType::Image, t);
             c.linkId = link;
+            applyInOut(c);
             seq->videoTracks[vIdx].overwriteInsert(c);
             ids << c.id;
         }
@@ -361,6 +399,7 @@ QList<quint64> Document::addMediaClip(const QString &seqId, const QString &media
             ensureTrackCount(*seq, TrackType::Audio, aIdx + 1);
             Clip c = makeClipFromMedia(*m, ClipType::Audio, t);
             c.linkId = link;
+            applyInOut(c);
             seq->audioTracks[aIdx].overwriteInsert(c);
             ids << c.id;
         }

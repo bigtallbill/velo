@@ -3,6 +3,7 @@
 #include "ui/Theme.h"
 #include <QDragEnterEvent>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QMenu>
@@ -213,10 +214,13 @@ void MediaBin::contextMenu(const QPoint &pos) {
     QMenu menu(this);
     QAction *import = menu.addAction(tr("Import…"));
     QAction *newSeqFrom = nullptr, *open = nullptr, *rename = nullptr,
-            *remove = nullptr;
+            *remove = nullptr, *relink = nullptr;
     QString ref = it ? it->data(Qt::UserRole).toString() : QString();
     if (ref.startsWith("media:")) {
+        const MediaItem *m = m_doc->project().mediaByIdConst(ref.mid(6));
         newSeqFrom = menu.addAction(tr("New Sequence from Clip"));
+        relink = menu.addAction(m && m->offline ? tr("Locate File…")
+                                                : tr("Replace File…"));
         rename = menu.addAction(tr("Rename"));
         remove = menu.addAction(tr("Remove\tDel"));
     } else if (ref.startsWith("sequence:")) {
@@ -230,6 +234,20 @@ void MediaBin::contextMenu(const QPoint &pos) {
         importFilesDialog();
     } else if (newSeqFrom && chosen == newSeqFrom) {
         m_doc->sequenceFromMedia(ref.mid(6));
+    } else if (relink && chosen == relink) {
+        const MediaItem *m = m_doc->project().mediaByIdConst(ref.mid(6));
+        const QString start =
+            m && !m->path.isEmpty() ? QFileInfo(m->path).path() : QDir::homePath();
+        const QString file = QFileDialog::getOpenFileName(
+            this, tr("Locate Media File"), start,
+            tr("Media files (*.mp4 *.mov *.mkv *.webm *.avi *.m4v *.mts *.mp3 "
+               "*.wav *.flac *.aac *.ogg *.opus *.m4a *.png *.jpg *.jpeg *.webp "
+               "*.bmp *.tif *.tiff *.gif *.svg);;All files (*)"));
+        if (!file.isEmpty()) {
+            if (m_doc->relocateMedia(ref.mid(6), file))
+                m_thumbs.remove(ref.mid(6));  // re-thumbnail the new file
+            refresh();
+        }
     } else if (open && chosen == open) {
         m_doc->openSequenceTab(ref.mid(9));
     } else if (rename && chosen == rename) {

@@ -2,7 +2,7 @@
 
 A fast, friendly non-linear video editor for Linux, built with **C++20, Qt 6
 and FFmpeg**. Velo follows the familiar Premiere-style layout — project bin,
-source/program monitors, effect controls and a multi-track timeline — while
+media-preview/sequence monitors, effect controls and a multi-track timeline — while
 staying small, hackable and quick.
 
 ![layout](dist/velo.svg)
@@ -10,8 +10,13 @@ staying small, hackable and quick.
 ## Features
 
 - **Media** — import video, audio, images and SVG (drag files into the
-  Project panel or `Ctrl+I`); thumbnails in the bin; double-click to preview
-  in the Source monitor; offline media is flagged after project relink.
+  Project panel or `Ctrl+I`); thumbnails in the bin; double-click or drop
+  onto the monitor to open it in the Media Preview; offline media is flagged
+  and can be re-pointed via right-click → *Locate / Replace File…*.
+- **Media Preview monitor** — keeps a dropdown of loaded media (✕ unloads),
+  mini-timeline with draggable in/out brackets (`I` / `O` at the playhead);
+  drag the picture into the timeline to insert just the in→out range.
+  Stills show without a transport.
 - **Sequences** — create manually with delivery presets (YouTube 1080p/4K,
   Cinema 4K DCI, TikTok/Reels, Instagram Square, …) or right-click a clip →
   *New Sequence from Clip*. Multiple sequences open as timeline tabs.
@@ -24,15 +29,18 @@ staying small, hackable and quick.
   together; *Unlink* from the context menu when needed.
 - **Nesting ("Chain")** — select clips → `Alt+C` collapses them into one
   nested-sequence clip; double-click it to open the nested sequence in a tab.
-- **Monitor interaction** — move the selected clip directly in the Program
+- **Monitor interaction** — move the selected clip directly in the Sequence
   monitor, scale with corner handles (uniform by default, `Shift` distorts),
-  rotation/opacity in Effect Controls. Preview quality: Full, 1/2, 1/4, 1/8.
+  rotation/opacity in Effect Controls; drag any numeric label in Effect
+  Controls left/right to scrub its value (`Shift` = 10×). Preview quality:
+  Full, 1/2, 1/4, 1/8.
 - **Keyframes everywhere** — position, scale, rotation, opacity, volume,
   track volume and every effect parameter animate via the stopwatch/diamond
   controls; smooth-step interpolation.
 - **Audio** — waveforms on clips, a draggable volume line (Ctrl+click adds
   keyframes, drag dots to shape, double-click removes), per-track volume
-  with sequence-time keyframes, clip speed with resampled audio.
+  with sequence-time keyframes, clip speed with resampled audio; audible
+  scrubbing while dragging the playhead (Playback ▸ Audio Scrubbing).
 - **Effects (modular)** — Gaussian Blur, Color Correction (brightness /
   contrast / saturation / temperature), Sharpen, Black & White, Vignette,
   Flip, audio Gain; drag onto clips or double-click to apply; reorder-safe
