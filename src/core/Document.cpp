@@ -753,6 +753,18 @@ void Document::setClipSpeed(const QString &seqId, quint64 id, double speed) {
     notifySequenceChanged(seqId);
 }
 
+void Document::setClipPreservePitch(const QString &seqId, quint64 id, bool on) {
+    beginUndoStep();
+    {
+        QMutexLocker lock(&m_mutex);
+        Sequence *seq = m_project.sequenceById(seqId);
+        if (!seq) return;
+        for (quint64 cid : withLinked(seqId, {id}))
+            if (Clip *c = seq->findClip(cid)) c->preservePitch = on;
+    }
+    notifySequenceChanged(seqId);
+}
+
 void Document::closeGap(const QString &seqId, TrackType type, int trackIdx,
                         double t) {
     beginUndoStep();

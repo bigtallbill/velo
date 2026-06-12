@@ -127,8 +127,17 @@ jobs:
           VER=${{ steps.ver.outputs.v }}
           mkdir -p bundle/Velo
           cp build/velo.exe /c/ff/bin/*.dll /c/ff/bin/ffmpeg.exe bundle/Velo/
-          windeployqt --release bundle/Velo/velo.exe
+          windeployqt --release --compiler-runtime bundle/Velo/velo.exe
           cp "$(cygpath "$QT_ROOT_DIR")/plugins/platforms/qoffscreen.dll" bundle/Velo/platforms/
+          # App-local MSVC C++ runtime: without these, machines that never
+          # installed the VC redistributable greet users with cryptic
+          # "VCRUNTIME140_1.dll was not found" popups. windeployqt
+          # --compiler-runtime is supposed to add them, but copy explicitly
+          # from the toolchain redist dir and fail loudly if they're absent.
+          cp "$(cygpath "$VCToolsRedistDir")"/x64/Microsoft.VC*.CRT/*.dll bundle/Velo/
+          for dll in vcruntime140.dll vcruntime140_1.dll msvcp140.dll; do
+            [ -f "bundle/Velo/$dll" ] || { echo "missing $dll in bundle"; exit 1; }
+          done
           (cd bundle && 7z a "../Velo-$VER-windows-x86_64.zip" Velo > /dev/null)
       - name: Smoke-test bundle
         run: QT_QPA_PLATFORM=offscreen ./bundle/Velo/velo.exe --selftest

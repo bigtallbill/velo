@@ -45,12 +45,15 @@ yourself with `dist/demo/make_demo.sh`.*
   controls; smooth-step interpolation.
 - **Audio** — waveforms on clips, a draggable volume line (Ctrl+click adds
   keyframes, drag dots to shape, double-click removes), per-track volume
-  with sequence-time keyframes, clip speed with resampled audio; audible
-  scrubbing while dragging the playhead (Playback ▸ Audio Scrubbing).
+  with sequence-time keyframes, clip speed with resampled audio or
+  pitch-preserving time-stretch ("Preserve pitch" in Effect Controls ▸ Time);
+  audible scrubbing while dragging the playhead (Playback ▸ Audio Scrubbing).
 - **Effects (modular)** — Gaussian Blur, Color Correction (brightness /
-  contrast / saturation / temperature), Sharpen, Black & White, Vignette,
-  Flip, audio Gain; drag onto clips or double-click to apply; reorder-safe
-  parameter UI is generated from the effect description.
+  contrast / saturation / temperature), Color Grade (exposure, contrast,
+  highlights/shadows, whites/blacks, white balance, hue, saturation,
+  vibrance, lift/gamma/gain), Sharpen, Black & White, Vignette, Flip, audio
+  Gain; drag onto clips or double-click to apply; reorder-safe parameter UI
+  is generated from the effect description.
 - **Transitions** — Cross Dissolve, Fade, Dip to Black; drag onto a clip
   edge or use the context menu; adjust the length by dragging the wedge in
   the timeline or in Effect Controls.

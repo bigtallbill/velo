@@ -234,10 +234,13 @@ void MainWindow::buildMenus() {
     connect(about, &QAction::triggered, this, [this] {
         QMessageBox::about(
             this, tr("About Velo"),
-            tr("<h3>Velo 1.0</h3>"
+            tr("<h3>Velo %1</h3>"
                "<p>A fast, friendly non-linear video editor.</p>"
                "<p>Built with Qt and FFmpeg. Projects are saved as portable "
-               "<code>.velo</code> JSON files.</p>"));
+               "<code>.velo</code> JSON files.</p>"
+               "<p><a href=\"https://github.com/notune/velo\">"
+               "github.com/notune/velo</a></p>")
+                .arg(QStringLiteral(VELO_VERSION)));
     });
 }
 

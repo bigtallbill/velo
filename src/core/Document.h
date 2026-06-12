@@ -80,6 +80,7 @@ public:
     void linkClips(const QString &seqId, const QSet<quint64> &ids);
     void removeSequence(const QString &seqId);
     void setClipSpeed(const QString &seqId, quint64 id, double speed);
+    void setClipPreservePitch(const QString &seqId, quint64 id, bool on);
     // Close the empty gap on a track at time t (shifts later clips left).
     void closeGap(const QString &seqId, TrackType type, int trackIdx, double t);
     void renameSequence(const QString &seqId, const QString &name);

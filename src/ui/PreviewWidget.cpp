@@ -46,7 +46,7 @@ PreviewWidget::PreviewWidget(Document *doc, QWidget *parent)
     m_sourceList->setToolTip(tr("Media loaded in the preview"));
     srcLay->addWidget(m_sourceList, 1);
     auto *unload = new QToolButton;
-    unload->setText("✕");
+    unload->setIcon(Theme::icon("close"));
     unload->setAutoRaise(true);
     unload->setToolTip(tr("Unload this media from the preview"));
     srcLay->addWidget(unload);
@@ -77,9 +77,10 @@ PreviewWidget::PreviewWidget(Document *doc, QWidget *parent)
 
     auto *bar = new QHBoxLayout;
     bar->setContentsMargins(6, 3, 6, 3);
-    auto mkBtn = [&](const QString &text, const QString &tip) {
+    auto mkBtn = [&](const QString &iconName, const QString &tip) {
         auto *b = new QToolButton;
-        b->setText(text);
+        b->setIcon(Theme::icon(iconName));
+        b->setIconSize(QSize(18, 18));
         b->setToolTip(tip);
         b->setAutoRaise(true);
         bar->addWidget(b);
@@ -89,11 +90,11 @@ PreviewWidget::PreviewWidget(Document *doc, QWidget *parent)
     m_timecode->setStyleSheet("font-family: monospace; color: #4f9cf5;");
     bar->addWidget(m_timecode);
     bar->addStretch(1);
-    QToolButton *startBtn = m_startBtn = mkBtn("⏮", tr("Go to start (Home)"));
-    QToolButton *backBtn = m_backBtn = mkBtn("◀▮", tr("Step one frame back (Left)"));
-    m_playBtn = mkBtn("▶", tr("Play / Pause (Space)"));
-    QToolButton *fwdBtn = m_fwdBtn = mkBtn("▮▶", tr("Step one frame forward (Right)"));
-    QToolButton *endBtn = m_endBtn = mkBtn("⏭", tr("Go to end (End)"));
+    QToolButton *startBtn = m_startBtn = mkBtn("skip-start", tr("Go to start (Home)"));
+    QToolButton *backBtn = m_backBtn = mkBtn("step-back", tr("Step one frame back (Left)"));
+    m_playBtn = mkBtn("play", tr("Play / Pause (Space)"));
+    QToolButton *fwdBtn = m_fwdBtn = mkBtn("step-forward", tr("Step one frame forward (Right)"));
+    QToolButton *endBtn = m_endBtn = mkBtn("skip-end", tr("Go to end (End)"));
     bar->addStretch(1);
     m_quality = new QComboBox;
     m_quality->addItems({tr("Full"), tr("1/2"), tr("1/4"), tr("1/8")});
@@ -318,7 +319,7 @@ void PreviewWidget::requestRender() {
 void PreviewWidget::setPlaying(bool on) {
     if (m_playing == on) return;
     m_playing = on;
-    m_playBtn->setText(on ? "⏸" : "▶");
+    m_playBtn->setIcon(Theme::icon(on ? "pause" : "play"));
     if (on) {
         const double t = playhead();
         m_audio->invalidateReaders();

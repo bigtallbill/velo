@@ -64,7 +64,8 @@ ParamRow::ParamRow(Document *doc, const QString &seqId, const QString &label,
 
     m_animBtn = new QToolButton;
     m_animBtn->setCheckable(true);
-    m_animBtn->setText("⏱");
+    m_animBtn->setIcon(Theme::icon("stopwatch"));
+    m_animBtn->setIconSize(QSize(15, 15));
     m_animBtn->setAutoRaise(true);
     m_animBtn->setToolTip(tr("Toggle animation (creates/clears keyframes)"));
     lay->addWidget(m_animBtn);
@@ -82,7 +83,8 @@ ParamRow::ParamRow(Document *doc, const QString &seqId, const QString &label,
     lay->addWidget(m_spin, 1);
 
     m_keyBtn = new QToolButton;
-    m_keyBtn->setText("◆");
+    m_keyBtn->setIcon(Theme::icon("keyframe"));
+    m_keyBtn->setIconSize(QSize(13, 13));
     m_keyBtn->setAutoRaise(true);
     m_keyBtn->setToolTip(tr("Add / remove keyframe at the playhead"));
     lay->addWidget(m_keyBtn);
@@ -147,9 +149,8 @@ void ParamRow::refresh() {
     const double t = m_localTime();
     if (!m_spin->hasFocus()) m_spin->setValue(p->at(t));
     m_animBtn->setChecked(p->animated());
-    m_keyBtn->setText(p->hasKeyAt(t) ? "◆" : "◇");
-    m_keyBtn->setStyleSheet(p->hasKeyAt(t) ? "color:#4f9cf5;" : "");
-    m_animBtn->setStyleSheet(p->animated() ? "color:#4f9cf5;" : "");
+    m_keyBtn->setIcon(Theme::icon(p->hasKeyAt(t) ? "keyframe-on" : "keyframe"));
+    m_animBtn->setIcon(Theme::icon(p->animated() ? "stopwatch-on" : "stopwatch"));
     m_updating = false;
 }
 
@@ -331,7 +332,7 @@ void PropertiesPanel::buildClipUi(QVBoxLayout *lay, quint64 clipId) {
         Q_UNUSED(sy);
         // chain button: uniform vs independent scaling
         auto *chain = new QToolButton;
-        chain->setText(clip->uniformScale ? "🔗" : "⛓");
+        chain->setIcon(Theme::icon(clip->uniformScale ? "link" : "unlink"));
         chain->setCheckable(true);
         chain->setChecked(clip->uniformScale);
         chain->setAutoRaise(true);
@@ -398,6 +399,18 @@ void PropertiesPanel::buildClipUi(QVBoxLayout *lay, quint64 clipId) {
                 });
         row->addWidget(spin, 1);
         bl->addLayout(row);
+        auto *pitch = new QCheckBox(tr("Preserve pitch"));
+        pitch->setChecked(clip->preservePitch);
+        pitch->setToolTip(tr("Keep the original audio tone when the speed is "
+                             "changed (time-stretch instead of resampling), "
+                             "so voices don't turn into chipmunks"));
+        connect(pitch, &QCheckBox::toggled, this,
+                [this, seqId, clipId](bool on) {
+                    m_selfEdit = true;
+                    m_doc->setClipPreservePitch(seqId, clipId, on);
+                    m_selfEdit = false;
+                });
+        bl->addWidget(pitch);
     }
 
     // ---- text ------------------------------------------------------------------
@@ -507,7 +520,7 @@ void PropertiesPanel::buildClipUi(QVBoxLayout *lay, quint64 clipId) {
                         }
                     });
             auto *rm = new QToolButton;
-            rm->setText("✕");
+            rm->setIcon(Theme::icon("close"));
             rm->setAutoRaise(true);
             connect(rm, &QToolButton::clicked, this,
                     [this, resolveClip, seqId, isIn] {
@@ -548,7 +561,7 @@ void PropertiesPanel::buildClipUi(QVBoxLayout *lay, quint64 clipId) {
                     }
                 });
         auto *remove = new QToolButton;
-        remove->setText("🗑");
+        remove->setIcon(Theme::icon("trash"));
         remove->setAutoRaise(true);
         remove->setToolTip(tr("Remove effect"));
         connect(remove, &QToolButton::clicked, this,

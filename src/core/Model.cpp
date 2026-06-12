@@ -81,6 +81,7 @@ QJsonObject Clip::toJson() const {
     o["duration"] = duration;
     o["in"] = in;
     o["speed"] = speed;
+    o["preservePitch"] = preservePitch;
     o["linkId"] = QString::number(linkId);
     o["enabled"] = enabled;
     o["posX"] = posX.toJson();
@@ -109,6 +110,7 @@ Clip Clip::fromJson(const QJsonObject &o) {
     c.duration = o["duration"].toDouble();
     c.in = o["in"].toDouble();
     c.speed = o["speed"].toDouble(1.0);
+    c.preservePitch = o["preservePitch"].toBool(false);
     c.linkId = o["linkId"].toString().toULongLong();
     c.enabled = o["enabled"].toBool(true);
     c.posX = AnimatedParam::fromJson(o["posX"].toObject());

@@ -95,6 +95,23 @@ static int selftest() {
             return 1;
         }
         vclip.effects.clear();
+        // color grade: a warm temperature must raise red vs blue
+        fx = EffectRegistry::instance()->createInstance("color_grade");
+        fx.params["temperature"] = AnimatedParam(80);
+        vclip.effects.append(fx);
+        QImage warm = comp.renderFrame(seqId, 1.0, 0.5);
+        qint64 rb0 = 0, rb1 = 0;
+        for (int y = 0; y < frame.height(); y += 7)
+            for (int x = 0; x < frame.width(); x += 7) {
+                rb0 += qRed(frame.pixel(x, y)) - qBlue(frame.pixel(x, y));
+                rb1 += qRed(warm.pixel(x, y)) - qBlue(warm.pixel(x, y));
+            }
+        if (rb1 < rb0 + frame.width() * frame.height() / 4) {
+            fprintf(stderr, "selftest: color grade temperature had no effect "
+                            "(%lld -> %lld)\n", rb0, rb1);
+            return 1;
+        }
+        vclip.effects.clear();
     }
     {
         // ripple delete after a nested sequence must keep linked A/V in sync
@@ -130,6 +147,36 @@ static int selftest() {
     if (peak < 0.01f) {
         fprintf(stderr, "selftest: audio mix silent\n");
         return 1;
+    }
+    {
+        // preserve-pitch: at 200% speed the 440 Hz test tone must stay
+        // ~440 Hz; the plain resample path must shift it to ~880 Hz
+        Document d4;
+        const QString s4 = d4.sequenceFromMedia(d4.importMedia({vid}).first());
+        Sequence *sq = d4.project().sequenceById(s4);
+        const quint64 aid = sq->audioTracks[0].clips[0].id;
+        d4.setClipSpeed(s4, aid, 2.0);
+        AudioMixer mx(&d4.project(), d4.mutex());
+        const int n = AudioMixer::kRate;  // 1 s
+        QVector<float> b(n * 2);
+        auto toneHz = [&]() {
+            mx.mix(s4, 0.5, n, b.data());
+            int crossings = 0;
+            for (int i = 1; i < n; ++i)
+                if ((b[i * 2] >= 0) != (b[(i - 1) * 2] >= 0)) ++crossings;
+            return crossings / 2.0;
+        };
+        d4.setClipPreservePitch(s4, aid, true);
+        const double stretched = toneHz();
+        d4.setClipPreservePitch(s4, aid, false);
+        const double resampled = toneHz();
+        if (std::abs(stretched - 440) > 60 || std::abs(resampled - 880) > 90) {
+            fprintf(stderr,
+                    "selftest: preserve-pitch tones %.0f/%.0f Hz "
+                    "(want ~440/~880)\n",
+                    stretched, resampled);
+            return 1;
+        }
     }
     {
         // nesting twice must keep replacing clips in the timeline (the

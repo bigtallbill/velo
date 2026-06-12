@@ -107,6 +107,105 @@ void colorCorrect(QImage &img, double brightness, double contrast,
     });
 }
 
+// Full color grade. Tonal chain (white balance, exposure, lift/gamma/gain,
+// contrast, whites/blacks) is monotone per channel -> baked into one 256-entry
+// float LUT per channel. Highlights/shadows are luma-masked gains (a second
+// LUT on luma), hue/saturation/vibrance work per pixel on the chroma vector.
+void colorGrade(QImage &img, const QMap<QString, double> &p) {
+    const double exposure = p.value("exposure");           // stops
+    const double contrast = p.value("contrast");           // -100..100
+    const double highlights = p.value("highlights") / 100; // -1..1
+    const double shadows = p.value("shadows") / 100;
+    const double whites = p.value("whites") / 100;
+    const double blacks = p.value("blacks") / 100;
+    const double temp = p.value("temperature") / 100;
+    const double tint = p.value("tint") / 100;
+    const double hue = p.value("hue");                     // degrees
+    const double sat = p.value("saturation", 100) / 100;
+    const double vib = p.value("vibrance") / 100;
+    const double lift = p.value("lift") / 100;
+    const double gamma = p.value("gamma") / 100;
+    const double gain = p.value("gain") / 100;
+
+    // per-channel tonal LUT
+    const double wbR = 1.0 + 0.30 * temp + 0.10 * tint;
+    const double wbG = 1.0 - 0.20 * tint;
+    const double wbB = 1.0 - 0.30 * temp + 0.10 * tint;
+    const double exp2v = std::pow(2.0, exposure);
+    const double gainK = 1.0 + gain;            // ±100% -> 0..2x
+    const double liftK = lift * 0.25;           // shadows offset, ±0.25
+    const double gammaExp = std::pow(2.0, -gamma);  // ±1 stop on the mids
+    const double ck = (contrast + 100.0) / 100.0;   // pivot contrast 0..2
+    const double pivot = 0.435;                 // ~18% grey in sRGB
+    const double bp = -blacks * 0.25, wp = 1.0 + whites * -0.25;
+    float lutR[256], lutG[256], lutB[256];
+    auto tone = [&](double v, double wb) {
+        v *= wb * exp2v * gainK;
+        v += liftK * (1.0 - v);
+        v = std::pow(qMax(v, 0.0), gammaExp);
+        v = (v - pivot) * ck + pivot;
+        v = (v - bp) / qMax(0.05, wp - bp);
+        return float(qBound(0.0, v, 1.0));
+    };
+    for (int i = 0; i < 256; ++i) {
+        const double v = i / 255.0;
+        lutR[i] = tone(v, wbR);
+        lutG[i] = tone(v, wbG);
+        lutB[i] = tone(v, wbB);
+    }
+
+    // luma-masked highlight/shadow gain, indexed by luma byte
+    float lumaGain[256];
+    const bool doHS = std::abs(highlights) > 1e-3 || std::abs(shadows) > 1e-3;
+    for (int i = 0; i < 256; ++i) {
+        const double l = i / 255.0;
+        const double target = l + 0.35 * shadows * (1 - l) * (1 - l) +
+                              0.35 * highlights * l * l;
+        lumaGain[i] = float(qBound(0.0, target, 1.0) / qMax(l, 1e-3));
+    }
+
+    // hue rotation about the neutral (grey) axis of RGB space
+    const bool doHue = std::abs(hue) > 0.05;
+    const double a = hue * M_PI / 180.0, cosA = std::cos(a), sinA = std::sin(a);
+    const double hm00 = cosA + (1 - cosA) / 3, hmA = (1 - cosA) / 3 - sinA / std::sqrt(3.0),
+                 hmB = (1 - cosA) / 3 + sinA / std::sqrt(3.0);
+    const bool doSat = std::abs(sat - 1.0) > 1e-3 || std::abs(vib) > 1e-3;
+
+    forEachRow(img, [&](int y) {
+        QRgb *px = reinterpret_cast<QRgb *>(img.scanLine(y));
+        const int w = img.width();
+        for (int x = 0; x < w; ++x) {
+            float r = lutR[qRed(px[x])], g = lutG[qGreen(px[x])],
+                  b = lutB[qBlue(px[x])];
+            float l = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+            if (doHS) {
+                const float f = lumaGain[int(l * 255.0f + 0.5f)];
+                r *= f; g *= f; b *= f;
+            }
+            if (doHue) {
+                const float r2 = float(hm00 * r + hmA * g + hmB * b);
+                const float g2 = float(hmB * r + hm00 * g + hmA * b);
+                const float b2 = float(hmA * r + hmB * g + hm00 * b);
+                r = r2; g = g2; b = b2;
+            }
+            if (doSat) {
+                l = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+                float cr = r - l, cg = g - l, cb = b - l;
+                // vibrance: boost muted colors more than saturated ones
+                const float cmag = qMin(
+                    1.0f, 3.0f * qMax(qMax(std::abs(cr), std::abs(cg)),
+                                      std::abs(cb)));
+                const float k = float(sat * (1.0 + vib * (1.0 - cmag)));
+                r = l + cr * k; g = l + cg * k; b = l + cb * k;
+            }
+            px[x] = qRgba(qBound(0, int(r * 255.0f + 0.5f), 255),
+                          qBound(0, int(g * 255.0f + 0.5f), 255),
+                          qBound(0, int(b * 255.0f + 0.5f), 255),
+                          qAlpha(px[x]));
+        }
+    });
+}
+
 void sharpen(QImage &img, double amount) {
     if (amount <= 0) return;
     QImage blurred = img.copy();
@@ -210,6 +309,25 @@ EffectRegistry::EffectRegistry() {
         [](QImage &img, const QMap<QString, double> &p, double) {
             colorCorrect(img, p.value("brightness"), p.value("contrast"),
                          p.value("saturation", 100), p.value("temperature"));
+        }});
+    registerEffect({
+        "color_grade", "Color Grade", "Color",
+        {{"exposure", "Exposure (EV)", -4, 4, 0, 0.05, 2},
+         {"contrast", "Contrast", -100, 100, 0, 1, 0},
+         {"highlights", "Highlights", -100, 100, 0, 1, 0},
+         {"shadows", "Shadows", -100, 100, 0, 1, 0},
+         {"whites", "Whites", -100, 100, 0, 1, 0},
+         {"blacks", "Blacks", -100, 100, 0, 1, 0},
+         {"temperature", "Temperature", -100, 100, 0, 1, 0},
+         {"tint", "Tint", -100, 100, 0, 1, 0},
+         {"hue", "Hue", -180, 180, 0, 1, 0},
+         {"saturation", "Saturation", 0, 200, 100, 1, 0},
+         {"vibrance", "Vibrance", -100, 100, 0, 1, 0},
+         {"lift", "Lift", -100, 100, 0, 1, 0},
+         {"gamma", "Gamma", -100, 100, 0, 1, 0},
+         {"gain", "Gain", -100, 100, 0, 1, 0}},
+        [](QImage &img, const QMap<QString, double> &p, double) {
+            colorGrade(img, p);
         }});
     registerEffect({
         "sharpen", "Sharpen", "Color",

@@ -1,8 +1,13 @@
 #pragma once
 #include <QApplication>
+#include <QIcon>
 
 namespace Theme {
 void apply(QApplication &app);
+
+// Bundled monochrome SVG icon (resources/icons/<name>.svg), cached.
+// All UI glyphs come from here so they render identically on every OS.
+QIcon icon(const QString &name);
 
 // shared palette constants for custom-painted widgets
 inline QColor panel() { return QColor(0x23, 0x25, 0x29); }

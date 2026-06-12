@@ -36,28 +36,29 @@ TimelinePanel::TimelinePanel(Document *doc, QWidget *parent)
     m_tabs->setUsesScrollButtons(true);
     top->addWidget(m_tabs, 1);
 
-    auto mkTool = [&](const QString &text, const QString &tip, bool checkable) {
+    auto mkTool = [&](const QString &iconName, const QString &tip, bool checkable) {
         auto *b = new QToolButton;
-        b->setText(text);
+        b->setIcon(Theme::icon(iconName));
+        b->setIconSize(QSize(17, 17));
         b->setToolTip(tip);
         b->setCheckable(checkable);
         b->setAutoRaise(true);
         top->addWidget(b);
         return b;
     };
-    m_selectBtn = mkTool("⬉", tr("Selection tool (V)"), true);
-    m_razorBtn = mkTool("✂", tr("Razor tool (C) — click a clip to cut it"), true);
-    m_textBtn = mkTool("T", tr("Add text at the playhead (T)"), false);
-    m_magnetBtn = mkTool("🧲", tr("Magnetic snapping (N) — hold Alt to bypass"), true);
-    m_scrubBtn = mkTool("🔉", tr("Audio scrubbing — hear the audio under the "
-                                 "playhead while dragging it"), true);
+    m_selectBtn = mkTool("select", tr("Selection tool (V)"), true);
+    m_razorBtn = mkTool("razor", tr("Razor tool (C) — click a clip to cut it"), true);
+    m_textBtn = mkTool("text", tr("Add text at the playhead (T)"), false);
+    m_magnetBtn = mkTool("magnet", tr("Magnetic snapping (N) — hold Alt to bypass"), true);
+    m_scrubBtn = mkTool("speaker", tr("Audio scrubbing — hear the audio under the "
+                                      "playhead while dragging it"), true);
     m_selectBtn->setChecked(true);
     m_magnetBtn->setChecked(true);
     m_scrubBtn->setChecked(
         QSettings("velo", "velo").value("audio/scrub", true).toBool());
-    auto *zoomOut = mkTool("−", tr("Zoom out (-)"), false);
-    auto *zoomIn = mkTool("+", tr("Zoom in (+)"), false);
-    auto *zoomFit = mkTool("↔", tr("Zoom to fit (\\)"), false);
+    auto *zoomOut = mkTool("zoom-out", tr("Zoom out (-)"), false);
+    auto *zoomIn = mkTool("zoom-in", tr("Zoom in (+)"), false);
+    auto *zoomFit = mkTool("zoom-fit", tr("Zoom to fit (\\)"), false);
     lay->addLayout(top);
 
     m_view = new TimelineView(doc);
@@ -358,9 +359,11 @@ void TimelineView::paintEvent(QPaintEvent *) {
             p.setPen(Qt::NoPen);
             p.setBrush(on ? QColor(0xc8, 0x60, 0x46) : QColor(0x3a, 0x3d, 0x42));
             p.drawRoundedRect(br, 3, 3);
-            p.setPen(Qt::white);
-            p.drawText(br, Qt::AlignCenter,
-                       b == 1 ? "🔒" : (row.type == TrackType::Video ? "👁" : "M"));
+            const QIcon &ic = Theme::icon(
+                b == 1 ? "lock" : (row.type == TrackType::Video ? "eye" : "mute"));
+            const int s = qMin(int(br.height()) - 4, 14);
+            ic.paint(&p, QRect(int(br.center().x()) - s / 2,
+                               int(br.center().y()) - s / 2, s, s));
         }
         if (track->locked) {
             QBrush hatch(QColor(255, 255, 255, 26), Qt::BDiagPattern);

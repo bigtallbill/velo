@@ -1,6 +1,16 @@
 #include "ui/Theme.h"
+#include <QHash>
 #include <QPalette>
 #include <QStyleFactory>
+
+QIcon Theme::icon(const QString &name) {
+    static QHash<QString, QIcon> cache;
+    auto it = cache.find(name);
+    if (it == cache.end())
+        it = cache.insert(name, QIcon(QStringLiteral(":/icons/") + name +
+                                      QStringLiteral(".svg")));
+    return it.value();
+}
 
 void Theme::apply(QApplication &app) {
     app.setStyle(QStyleFactory::create("Fusion"));

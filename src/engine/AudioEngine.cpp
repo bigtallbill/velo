@@ -5,6 +5,26 @@
 #include <QMutexLocker>
 #include <QSettings>
 #include <QVector>
+#include <cmath>
+
+// Pitch-preserving time-stretch: granular overlap-add. Hann-windowed grains
+// of kGrain samples spaced kGrain/2 apart in *output* time (the windows sum
+// to 1 at 50% overlap); each grain plays the source at 1x from where the
+// sped-up clip has reached. Grain scheduling derives from the absolute
+// clip-local output sample index, so blocks rendered independently (playback
+// callbacks, export, scrubbing, seeks) line up without carrying state.
+static constexpr int kGrain = 2048;       // ~43 ms at 48 kHz
+static constexpr int kHop = kGrain / 2;
+
+static const float *hannWindow() {
+    static const QVector<float> w = [] {
+        QVector<float> v(kGrain);
+        for (int i = 0; i < kGrain; ++i)
+            v[i] = float(0.5 - 0.5 * std::cos(2.0 * M_PI * i / kGrain));
+        return v;
+    }();
+    return w.constData();
+}
 
 static double fadeSmooth(double f) {
     f = qBound(0.0, f, 1.0);
@@ -61,14 +81,31 @@ void AudioMixer::mixSequence(const Sequence &seq, double t, int nFrames,
             const double srcT = clip.sourceTime(tlT);
 
             std::fill(clipBuf.begin(), clipBuf.begin() + n * 2, 0.0f);
-            // Above 4x, resampling n*speed source frames per block explodes
+            // Above 4x, reading n*speed source frames per block explodes
             // (20000x nested = millions of frames per callback). Read the
             // block at the mapped position at 1x instead — sounds like a
             // fast-forward skip and costs the same as normal playback.
             const bool skipPreview = clip.speed > 4.0;
             const bool varispeed =
                 !skipPreview && std::abs(clip.speed - 1.0) > 1e-4;
-            const int nSrc = varispeed ? qMax(2, int(n * clip.speed) + 2) : n;
+            const bool stretch = varispeed && clip.preservePitch;
+            // grain range covering output samples [O0, O0+n) (clip-local)
+            const qint64 O0 = qMax<qint64>(
+                0, qRound64((tlT - clip.start) * kRate));
+            const qint64 kMin =
+                O0 >= kGrain - 1 ? (O0 - (kGrain - 1)) / kHop : 0;
+            const qint64 kMax = (O0 + n - 1) / kHop;
+            int nSrc = n;
+            double readT = srcT;
+            if (stretch) {
+                // one contiguous source span covering every grain in the
+                // block, so the decoder keeps reading forward
+                nSrc = int(std::ceil(double(kMax - kMin) * kHop * clip.speed)) +
+                       kGrain + 2;
+                readT = clip.in + double(kMin * kHop) / kRate * clip.speed;
+            } else if (varispeed) {
+                nSrc = qMax(2, int(n * clip.speed) + 2);
+            }
             float *dst = clipBuf.data();
 
             if (clip.type == ClipType::Nested) {
@@ -78,7 +115,7 @@ void AudioMixer::mixSequence(const Sequence &seq, double t, int nFrames,
                 if (varispeed) {
                     srcBuf.resize(nSrc * 2);
                     std::fill(srcBuf.begin(), srcBuf.end(), 0.0f);
-                    mixSequence(*sub, srcT, nSrc, srcBuf.data(), depth + 1,
+                    mixSequence(*sub, readT, nSrc, srcBuf.data(), depth + 1,
                                 subCtx);
                 } else {
                     mixSequence(*sub, srcT, n, dst, depth + 1, subCtx);
@@ -90,7 +127,7 @@ void AudioMixer::mixSequence(const Sequence &seq, double t, int nFrames,
                     readerFor(ctx * 1000003ULL + clip.id, m->path);
                 if (varispeed) {
                     srcBuf.resize(nSrc * 2);
-                    r->read(srcT, nSrc, srcBuf.data());
+                    r->read(readT, nSrc, srcBuf.data());
                 } else {
                     r->read(srcT, n, dst);
                 }
@@ -98,7 +135,26 @@ void AudioMixer::mixSequence(const Sequence &seq, double t, int nFrames,
                 continue;  // video/image/text clips carry no audio
             }
 
-            if (varispeed) {  // naive linear resample (pitch follows speed)
+            if (stretch) {  // overlap-add grains (pitch is preserved)
+                const float *win = hannWindow();
+                for (qint64 k = kMin; k <= kMax; ++k) {
+                    // span offset of this grain's source start (fractional)
+                    const double off = double((k - kMin) * kHop) * clip.speed;
+                    const qint64 j0 = qMax<qint64>(0, O0 - k * kHop);
+                    const qint64 j1 = qMin<qint64>(kGrain, O0 + n - k * kHop);
+                    for (qint64 j = j0; j < j1; ++j) {
+                        const double pos = off + double(j);
+                        const int i0 = qMin(int(pos), nSrc - 2);
+                        const float fr = float(pos - i0);
+                        const float w = win[j];
+                        const int o = int(k * kHop + j - O0);
+                        dst[o * 2] += w * (srcBuf[i0 * 2] * (1 - fr) +
+                                           srcBuf[(i0 + 1) * 2] * fr);
+                        dst[o * 2 + 1] += w * (srcBuf[i0 * 2 + 1] * (1 - fr) +
+                                               srcBuf[(i0 + 1) * 2 + 1] * fr);
+                    }
+                }
+            } else if (varispeed) {  // linear resample (pitch follows speed)
                 for (int i = 0; i < n; ++i) {
                     double pos = i * clip.speed;
                     int i0 = qMin(int(pos), nSrc - 2);

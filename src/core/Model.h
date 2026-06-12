@@ -48,6 +48,7 @@ struct Clip {
     double duration = 0;  // timeline duration, seconds
     double in = 0;        // source in-point, source seconds
     double speed = 1.0;
+    bool preservePitch = false;  // time-stretch audio instead of resampling
     quint64 linkId = 0;   // clips sharing a nonzero linkId move together
     bool enabled = true;
 

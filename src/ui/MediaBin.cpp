@@ -121,7 +121,7 @@ void MediaBin::importFilesDialog() {
 }
 
 static QIcon paintIcon(const QImage &frame, const QColor &fallback,
-                       const QString &glyph) {
+                       const QString &iconName) {
     QImage img(192, 108, QImage::Format_ARGB32_Premultiplied);
     img.fill(fallback);
     QPainter p(&img);
@@ -130,12 +130,11 @@ static QIcon paintIcon(const QImage &frame, const QColor &fallback,
                                 Qt::SmoothTransformation);
         p.fillRect(img.rect(), QColor(20, 20, 22));
         p.drawImage((img.width() - s.width()) / 2, (img.height() - s.height()) / 2, s);
-    } else if (!glyph.isEmpty()) {
-        QFont f = p.font();
-        f.setPixelSize(48);
-        p.setFont(f);
-        p.setPen(QColor(255, 255, 255, 180));
-        p.drawText(img.rect(), Qt::AlignCenter, glyph);
+    } else if (!iconName.isEmpty()) {
+        const int s = 52;
+        p.setOpacity(0.75);
+        Theme::icon(iconName).paint(
+            &p, QRect((img.width() - s) / 2, (img.height() - s) / 2, s, s));
     }
     p.end();
     return QIcon(QPixmap::fromImage(img));
@@ -157,7 +156,7 @@ void MediaBin::makeThumbnail(const QString &mediaId) {
             this,
             [this, frame, id = item.id] {
                 m_thumbs[id] = paintIcon(frame, Theme::audioClip(), frame.isNull()
-                                                                       ? "♪"
+                                                                       ? "note"
                                                                        : QString());
                 refresh();
             },
@@ -177,7 +176,7 @@ void MediaBin::refresh() {
         auto *it = new QListWidgetItem(seq.name);
         it->setFlags(it->flags() | Qt::ItemIsEditable);
         it->setData(Qt::UserRole, "sequence:" + seq.id);
-        it->setIcon(paintIcon(QImage(), Theme::nestedClip(), "▦"));
+        it->setIcon(paintIcon(QImage(), Theme::nestedClip(), "nested"));
         it->setToolTip(tr("Sequence — %1×%2 @ %3 fps")
                            .arg(seq.width)
                            .arg(seq.height)
@@ -195,7 +194,7 @@ void MediaBin::refresh() {
         } else {
             it->setIcon(paintIcon(QImage(),
                                   m.hasVideo ? Theme::videoClip() : Theme::audioClip(),
-                                  m.hasVideo ? "▶" : "♪"));
+                                  m.hasVideo ? "play" : "note"));
             if (!m.offline) makeThumbnail(m.id);
         }
         QString tip = m.path;
