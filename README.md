@@ -173,3 +173,8 @@ coalesce so scrubbing never queues stale frames, and decoders only seek when
 playback jumps. When one file is needed at two distant positions every frame
 (cross dissolves, footage reused across nests) the cache opens an extra
 decoder "lane" per position so both streams decode sequentially.
+
+## License
+
+Velo is free software, licensed under the **GNU General Public License,
+version 3.0** — see [LICENSE](LICENSE).
