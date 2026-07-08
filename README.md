@@ -110,6 +110,13 @@ Install system-wide (binary, .desktop entry, icon):
 sudo cmake --install build --prefix /usr
 ```
 
+On NixOS (or any system with Nix + flakes) no packages need to be
+installed — build and run directly:
+
+```
+nix run github:notune/velo   # or `nix build` / `nix develop` in a checkout
+```
+
 A headless engine smoke test (decode → composite → mix → save/load →
 export) is built in:
 
