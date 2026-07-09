@@ -343,6 +343,9 @@ void MediaBin::contextMenu(const QPoint &pos) {
     QTreeWidgetItem *it = m_tree->itemAt(pos);
     const QString ref = refOf(it);
     const QString targetBin = binForItem(it);
+    // right-clicking inside a multi-selection: Remove acts on all of it
+    const bool multi =
+        it && it->isSelected() && m_tree->selectedItems().size() > 1;
     QMenu menu(this);
     QAction *import = menu.addAction(tr("Import…"));
     QAction *importFolder = menu.addAction(tr("Import Folder…"));
@@ -356,16 +359,19 @@ void MediaBin::contextMenu(const QPoint &pos) {
         relink = menu.addAction(m && m->offline ? tr("Locate File…")
                                                 : tr("Replace File…"));
         rename = menu.addAction(tr("Rename"));
-        remove = menu.addAction(tr("Remove\tDel"));
+        remove = menu.addAction(multi ? tr("Remove Selected\tDel")
+                                      : tr("Remove\tDel"));
     } else if (ref.startsWith("sequence:")) {
         menu.addSeparator();
         open = menu.addAction(tr("Open in Timeline"));
         rename = menu.addAction(tr("Rename"));
-        remove = menu.addAction(tr("Delete Sequence\tDel"));
+        remove = menu.addAction(multi ? tr("Remove Selected\tDel")
+                                      : tr("Delete Sequence\tDel"));
     } else if (ref.startsWith("folder:")) {
         menu.addSeparator();
         rename = menu.addAction(tr("Rename"));
-        remove = menu.addAction(tr("Remove Folder\tDel"));
+        remove = menu.addAction(multi ? tr("Remove Selected\tDel")
+                                      : tr("Remove Folder\tDel"));
     }
     QAction *chosen = menu.exec(m_tree->mapToGlobal(pos));
     if (!chosen) return;
@@ -393,7 +399,8 @@ void MediaBin::contextMenu(const QPoint &pos) {
     } else if (rename && chosen == rename) {
         m_tree->editItem(it);
     } else if (remove && chosen == remove) {
-        removeRef(ref);
+        if (multi) deleteSelectedItems();
+        else removeRef(ref);
     }
 }
 
