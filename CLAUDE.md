@@ -13,8 +13,10 @@ Qt6/FFmpeg non-linear video editor. See README.md for features/architecture.
   `WID=$(DISPLAY=:0 xdotool search --name "Velo" | head -1)`
   (the window title ends with the version, e.g. "Untitled — Velo 0.0.1")
   `DISPLAY=:0 maim -i $WID shot.png` (nixpkgs ffmpeg has no x11grab).
-  Drive input with `xdotool mousemove --window $WID <x> <y> click 1`
-  (coords are window-relative, 1680×960 default size).
+  Screenshots work; driving input with xdotool does NOT (focus stealing,
+  the real pointer interferes, and under Xvfb the window search finds
+  unmapped Qt helper windows). For interaction tests, ask the user to
+  run the build and check by hand.
 
 ## Conventions
 - Model mutations: call `Document::beginUndoStep()` **before** mutating,
