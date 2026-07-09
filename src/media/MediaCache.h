@@ -17,6 +17,13 @@ extern "C" {
 // Probe a file and fill a MediaItem (id/name left for the caller).
 bool probeMedia(const QString &path, MediaItem &out);
 
+// Extension-based check used when scanning directories (probeMedia still
+// validates each file) — keep in sync with mediaFileDialogFilter().
+bool isSupportedMediaFile(const QString &path);
+
+// "Media files (*.mp4 ...);;All files (*)" for QFileDialog.
+QString mediaFileDialogFilter();
+
 // Grab a single video frame (used for thumbnails). Returns null image on error.
 QImage grabFrame(const QString &path, double t, int maxW);
 

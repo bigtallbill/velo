@@ -50,13 +50,25 @@ public:
     void selectTrack(TrackType type, int idx);
 
     // ---- media ------------------------------------------------------------------
-    QStringList importMedia(const QStringList &paths);  // returns new ids
+    // Import files and/or directories into bin folder `bin` (empty = root).
+    // Directories are scanned recursively for supported media and mirrored
+    // as bin folders. Returns new ids. Callers bracket with beginUndoStep().
+    QStringList importMedia(const QStringList &paths, const QString &bin = {});
     void removeMedia(const QString &id);
     // Point an (offline or replaced) media item at a different file; keeps
     // the id and name so all clips referencing it pick up the new file.
     bool relocateMedia(const QString &id, const QString &path);
     // In/out points used by the media preview monitor (out < 0 = none).
     void setMediaInOut(const QString &id, double in, double out);
+
+    // ---- bin folders (paths are "/"-separated, empty = root) ---------------------
+    // All create their own undo step and emit mediaChanged.
+    void moveMediaToBin(const QStringList &ids, const QString &bin);
+    void createBinFolder(const QString &path);
+    // Move/rename the folder subtree `path` (media inside follow along).
+    void renameBinFolder(const QString &path, const QString &newName);
+    void moveBinFolder(const QString &path, const QString &newParent);
+    void removeBinFolder(const QString &path);  // removes contained media too
 
     // ---- sequences ----------------------------------------------------------------
     Sequence *createSequence(const QString &name, int w, int h, double fps);
@@ -116,6 +128,8 @@ signals:
 
 private:
     static QString freshId();
+    // Erase a media item and the clips referencing it; mutex must be held.
+    void removeMediaLocked(const QString &id);
     void ensureTrackCount(Sequence &seq, TrackType type, int count);
     Clip makeClipFromMedia(const MediaItem &m, ClipType type, double t);
 

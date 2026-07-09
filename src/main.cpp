@@ -324,6 +324,54 @@ static int selftest() {
         }
     }
 
+    {
+        // recursive folder import must mirror the directory tree as bin
+        // folders, skip unsupported files, and survive a save/load round-trip
+        const QString tree = dir + "/tree";
+        QDir().mkpath(tree + "/sub");
+        for (const QString &f : {tree + "/a.mp4", tree + "/sub/b.mp4"}) {
+            QFile::remove(f);
+            QFile::copy(vid, f);
+        }
+        QFile notes(tree + "/notes.txt");
+        if (notes.open(QIODevice::WriteOnly)) {
+            notes.write("not media");
+            notes.close();
+        }
+        Document d5;
+        if (d5.importMedia({tree}).size() != 2) {
+            fprintf(stderr, "selftest: folder import wrong count\n");
+            return 1;
+        }
+        QString aId, aBin, bBin;
+        for (const auto &m : d5.project().media) {
+            if (m.path.endsWith("/a.mp4")) { aId = m.id; aBin = m.bin; }
+            if (m.path.endsWith("/b.mp4")) bBin = m.bin;
+        }
+        if (aBin != "tree" || bBin != "tree/sub") {
+            fprintf(stderr, "selftest: folder import bins %s / %s\n",
+                    qPrintable(aBin), qPrintable(bBin));
+            return 1;
+        }
+        d5.renameBinFolder("tree/sub", "clips");
+        d5.moveMediaToBin({aId}, "tree/clips");
+        const QString binsProj = dir + "/bins.velo";
+        if (!d5.saveProject(binsProj) || !d5.loadProject(binsProj)) {
+            fprintf(stderr, "selftest: bins project save/load failed\n");
+            return 1;
+        }
+        for (const auto &m : d5.project().media)
+            if (m.bin != "tree/clips") {
+                fprintf(stderr, "selftest: bin lost in round-trip (%s)\n",
+                        qPrintable(m.bin));
+                return 1;
+            }
+        if (!d5.project().bins.contains("tree/clips")) {
+            fprintf(stderr, "selftest: bins list lost in round-trip\n");
+            return 1;
+        }
+    }
+
     // save & reload round-trip
     const QString proj = dir + "/test.velo";
     if (!doc.saveProject(proj) || !doc.loadProject(proj)) {
@@ -354,7 +402,7 @@ static int selftest() {
         fprintf(stderr, "selftest: export failed: %s\n", qPrintable(msg));
         return 1;
     }
-    printf("selftest: OK (render, mix, save/load, export -> %s)\n",
+    printf("selftest: OK (render, mix, bins, save/load, export -> %s)\n",
            qPrintable(es.outputPath));
     return 0;
 }

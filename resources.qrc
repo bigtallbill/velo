@@ -5,6 +5,7 @@
   <qresource prefix="/icons">
     <file alias="close.svg">resources/icons/close.svg</file>
     <file alias="eye.svg">resources/icons/eye.svg</file>
+    <file alias="folder.svg">resources/icons/folder.svg</file>
     <file alias="keyframe-on.svg">resources/icons/keyframe-on.svg</file>
     <file alias="keyframe.svg">resources/icons/keyframe.svg</file>
     <file alias="link.svg">resources/icons/link.svg</file>

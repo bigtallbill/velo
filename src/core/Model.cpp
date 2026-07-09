@@ -289,6 +289,7 @@ QJsonObject MediaItem::toJson() const {
     o["id"] = id;
     o["path"] = path;
     o["name"] = name;
+    if (!bin.isEmpty()) o["bin"] = bin;
     o["kind"] = int(kind);
     o["duration"] = duration;
     o["width"] = width;
@@ -305,6 +306,7 @@ MediaItem MediaItem::fromJson(const QJsonObject &o) {
     m.id = o["id"].toString();
     m.path = o["path"].toString();
     m.name = o["name"].toString();
+    m.bin = o["bin"].toString();
     m.kind = MediaKind(o["kind"].toInt());
     m.duration = o["duration"].toDouble();
     m.width = o["width"].toInt();
@@ -326,6 +328,13 @@ MediaItem *Project::mediaById(const QString &id) {
 const MediaItem *Project::mediaByIdConst(const QString &id) const {
     return const_cast<Project *>(this)->mediaById(id);
 }
+void Project::ensureBin(const QString &path) {
+    QString acc;
+    for (const QString &part : path.split('/', Qt::SkipEmptyParts)) {
+        acc = acc.isEmpty() ? part : acc + '/' + part;
+        if (!bins.contains(acc)) bins.append(acc);
+    }
+}
 Sequence *Project::sequenceById(const QString &id) {
     for (auto &s : sequences)
         if (s.id == id) return &s;
@@ -344,6 +353,7 @@ QJsonObject Project::toJson() const {
         if (!s.id.startsWith(QLatin1String("__")))  // internal (source monitor)
             ss.append(s.toJson());
     o["media"] = ms;
+    if (!bins.isEmpty()) o["bins"] = QJsonArray::fromStringList(bins);
     o["sequences"] = ss;
     o["openTabs"] = QJsonArray::fromStringList(openTabs);
     o["activeSequence"] = activeSequence;
@@ -354,6 +364,10 @@ Project Project::fromJson(const QJsonObject &o) {
     Project p;
     for (const auto &m : o["media"].toArray())
         p.media.append(MediaItem::fromJson(m.toObject()));
+    for (const auto &b : o["bins"].toArray()) p.bins << b.toString();
+    // hand-edited or older files: derive folders the media reference
+    for (const auto &m : p.media)
+        if (!m.bin.isEmpty()) p.ensureBin(m.bin);
     for (const auto &s : o["sequences"].toArray())
         p.sequences.append(Sequence::fromJson(s.toObject()));
     for (const auto &t : o["openTabs"].toArray()) p.openTabs << t.toString();

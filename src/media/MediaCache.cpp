@@ -6,6 +6,29 @@
 #include <QSvgRenderer>
 #include <QtConcurrent>
 
+static const QSet<QString> &supportedExtensions() {
+    static const QSet<QString> ext = {
+        // video
+        "mp4", "mov", "mkv", "webm", "avi", "m4v", "mts",
+        // audio
+        "mp3", "wav", "flac", "aac", "ogg", "opus", "m4a",
+        // stills
+        "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "gif",
+        "svg", "svgz"};
+    return ext;
+}
+
+bool isSupportedMediaFile(const QString &path) {
+    return supportedExtensions().contains(QFileInfo(path).suffix().toLower());
+}
+
+QString mediaFileDialogFilter() {
+    QStringList globs;
+    for (const QString &e : supportedExtensions()) globs << "*." + e;
+    globs.sort();
+    return QStringLiteral("Media files (%1);;All files (*)").arg(globs.join(' '));
+}
+
 static double streamDuration(AVFormatContext *fmt, AVStream *st) {
     if (st->duration > 0) return st->duration * av_q2d(st->time_base);
     if (fmt->duration > 0) return double(fmt->duration) / AV_TIME_BASE;

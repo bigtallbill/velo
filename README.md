@@ -16,9 +16,13 @@ yourself with `dist/demo/make_demo.sh`.*
 ## Features
 
 - **Media** — import video, audio, images and SVG (drag files into the
-  Project panel or `Ctrl+I`); thumbnails in the bin; double-click or drop
-  onto the monitor to open it in the Media Preview; offline media is flagged
-  and can be re-pointed via right-click → *Locate / Replace File…*.
+  Project panel or `Ctrl+I`), or a whole directory (`Ctrl+Shift+I`, or drop
+  a folder onto the panel) — supported media is picked up recursively and
+  the directory structure is mirrored as bin folders; organize the bin with
+  folders (*New Folder*, rename, drag items between folders); thumbnails in
+  the bin; double-click or drop onto the monitor to open it in the Media
+  Preview; offline media is flagged and can be re-pointed via right-click →
+  *Locate / Replace File…*.
 - **Media Preview monitor** — keeps a dropdown of loaded media (✕ unloads),
   mini-timeline with draggable in/out brackets (`I` / `O` at the playhead);
   drag the picture into the timeline to insert just the in→out range.

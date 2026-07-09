@@ -1,5 +1,7 @@
 #include "core/Document.h"
 #include "media/MediaCache.h"
+#include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -189,11 +191,34 @@ void Document::selectTrack(TrackType type, int idx) {
 }
 
 // -------------------------------------------------------------------- media
-QStringList Document::importMedia(const QStringList &paths) {
+QStringList Document::importMedia(const QStringList &paths, const QString &bin) {
+    // expand directories into (file, bin folder) pairs mirroring the tree
+    QList<QPair<QString, QString>> files;
+    for (const QString &path : paths) {
+        if (QFileInfo(path).isDir()) {
+            const QDir root(path);
+            const QString base =
+                bin.isEmpty() ? root.dirName() : bin + '/' + root.dirName();
+            QStringList found;
+            QDirIterator it(path, QDir::Files | QDir::Readable,
+                            QDirIterator::Subdirectories);
+            while (it.hasNext()) {
+                const QString f = it.next();
+                if (isSupportedMediaFile(f)) found << f;
+            }
+            found.sort();  // QDirIterator order is filesystem-dependent
+            for (const QString &f : found) {
+                const QString rel = QFileInfo(root.relativeFilePath(f)).path();
+                files.append({f, rel == "." ? base : base + '/' + rel});
+            }
+        } else {
+            files.append({path, bin});
+        }
+    }
     QStringList added;
     {
         QMutexLocker lock(&m_mutex);
-        for (const QString &path : paths) {
+        for (const auto &[path, folder] : files) {
             bool dup = false;
             for (const auto &m : m_project.media)
                 if (m.path == path) dup = true;
@@ -202,6 +227,8 @@ QStringList Document::importMedia(const QStringList &paths) {
             if (!probeMedia(path, item)) continue;
             item.id = freshId();
             item.name = QFileInfo(path).fileName();
+            item.bin = folder;
+            if (!folder.isEmpty()) m_project.ensureBin(folder);
             m_project.media.append(item);
             added << item.id;
         }
@@ -213,20 +240,24 @@ QStringList Document::importMedia(const QStringList &paths) {
     return added;
 }
 
+void Document::removeMediaLocked(const QString &id) {
+    for (int i = 0; i < m_project.media.size(); ++i)
+        if (m_project.media[i].id == id) m_project.media.removeAt(i--);
+    // remove clips referencing it
+    for (auto &seq : m_project.sequences)
+        for (auto *list : {&seq.videoTracks, &seq.audioTracks})
+            for (auto &t : *list)
+                for (int i = 0; i < t.clips.size(); ++i)
+                    if (t.clips[i].mediaId == id &&
+                        t.clips[i].type != ClipType::Nested)
+                        t.clips.removeAt(i--);
+}
+
 void Document::removeMedia(const QString &id) {
     beginUndoStep();
     {
         QMutexLocker lock(&m_mutex);
-        for (int i = 0; i < m_project.media.size(); ++i)
-            if (m_project.media[i].id == id) m_project.media.removeAt(i--);
-        // remove clips referencing it
-        for (auto &seq : m_project.sequences)
-            for (auto *list : {&seq.videoTracks, &seq.audioTracks})
-                for (auto &t : *list)
-                    for (int i = 0; i < t.clips.size(); ++i)
-                        if (t.clips[i].mediaId == id &&
-                            t.clips[i].type != ClipType::Nested)
-                            t.clips.removeAt(i--);
+        removeMediaLocked(id);
     }
     emit mediaChanged();
     for (const auto &s : m_project.sequences) emit sequenceChanged(s.id);
@@ -260,6 +291,105 @@ void Document::setMediaInOut(const QString &id, double in, double out) {
     m->srcIn = qMax(0.0, in);
     m->srcOut = out;
     m_dirty = true;
+}
+
+// -------------------------------------------------------------- bin folders
+// Re-root the subtree oldPath -> newPath in the folder list and the media.
+static void rebaseBins(Project &p, const QString &oldPath,
+                       const QString &newPath) {
+    const QString prefix = oldPath + '/';
+    for (QString &b : p.bins) {
+        if (b == oldPath) b = newPath;
+        else if (b.startsWith(prefix)) b = newPath + b.mid(oldPath.size());
+    }
+    p.bins.removeDuplicates();
+    for (auto &m : p.media) {
+        if (m.bin == oldPath) m.bin = newPath;
+        else if (m.bin.startsWith(prefix))
+            m.bin = newPath + m.bin.mid(oldPath.size());
+    }
+}
+
+void Document::moveMediaToBin(const QStringList &ids, const QString &bin) {
+    {
+        QMutexLocker lock(&m_mutex);
+        bool any = false;
+        for (const QString &id : ids)
+            if (const MediaItem *m = m_project.mediaByIdConst(id))
+                if (m->bin != bin) any = true;
+        if (!any) return;
+    }
+    beginUndoStep();
+    {
+        QMutexLocker lock(&m_mutex);
+        for (const QString &id : ids)
+            if (MediaItem *m = m_project.mediaById(id)) m->bin = bin;
+        if (!bin.isEmpty()) m_project.ensureBin(bin);
+    }
+    emit mediaChanged();
+}
+
+void Document::createBinFolder(const QString &path) {
+    if (path.isEmpty()) return;
+    {
+        QMutexLocker lock(&m_mutex);
+        if (m_project.bins.contains(path)) return;
+    }
+    beginUndoStep();
+    {
+        QMutexLocker lock(&m_mutex);
+        m_project.ensureBin(path);
+    }
+    emit mediaChanged();
+}
+
+void Document::renameBinFolder(const QString &path, const QString &newName) {
+    QString name = newName.trimmed();
+    name.remove('/');
+    if (path.isEmpty() || name.isEmpty()) return;
+    const int slash = path.lastIndexOf('/');
+    const QString newPath = slash < 0 ? name : path.left(slash + 1) + name;
+    if (newPath == path) return;
+    beginUndoStep();
+    {
+        QMutexLocker lock(&m_mutex);
+        rebaseBins(m_project, path, newPath);
+        m_project.ensureBin(newPath);
+    }
+    emit mediaChanged();
+}
+
+void Document::moveBinFolder(const QString &path, const QString &newParent) {
+    if (path.isEmpty()) return;
+    if (newParent == path || newParent.startsWith(path + '/')) return;
+    const QString name = path.mid(path.lastIndexOf('/') + 1);
+    const QString newPath = newParent.isEmpty() ? name : newParent + '/' + name;
+    if (newPath == path) return;
+    beginUndoStep();
+    {
+        QMutexLocker lock(&m_mutex);
+        rebaseBins(m_project, path, newPath);
+        m_project.ensureBin(newPath);
+    }
+    emit mediaChanged();
+}
+
+void Document::removeBinFolder(const QString &path) {
+    if (path.isEmpty()) return;
+    beginUndoStep();
+    {
+        QMutexLocker lock(&m_mutex);
+        const QString prefix = path + '/';
+        QStringList ids;
+        for (const auto &m : m_project.media)
+            if (m.bin == path || m.bin.startsWith(prefix)) ids << m.id;
+        for (const QString &id : ids) removeMediaLocked(id);
+        for (int i = m_project.bins.size(); i-- > 0;)
+            if (m_project.bins[i] == path || m_project.bins[i].startsWith(prefix))
+                m_project.bins.removeAt(i);
+    }
+    emit mediaChanged();
+    for (const auto &s : m_project.sequences) emit sequenceChanged(s.id);
 }
 
 // ---------------------------------------------------------------- sequences

@@ -6,11 +6,13 @@ Qt6/FFmpeg non-linear video editor. See README.md for features/architecture.
 - `cmake -B build -G Ninja && ninja -C build` → `build/velo`
 - Engine smoke test: `QT_QPA_PLATFORM=offscreen ./build/velo --selftest`
   (must print `selftest: OK`). Run it after engine/model changes.
-- GUI check on this machine: X `:0` has **no window manager**; root-window
-  grabs are black. Capture the app window directly:
+- GUI check on this machine (as of 2026-07): the desktop session is
+  KDE/Wayland, so force the X backend or the window is invisible to X
+  tools — and it appears on the live desktop, so keep checks brief:
+  `QT_QPA_PLATFORM=xcb DISPLAY=:0 ./build/velo &`
   `WID=$(DISPLAY=:0 xdotool search --name "Velo" | head -1)`
   (the window title ends with the version, e.g. "Untitled — Velo 0.0.1")
-  `ffmpeg -f x11grab -window_id $WID -i :0 -frames:v 1 shot.png`
+  `DISPLAY=:0 maim -i $WID shot.png` (nixpkgs ffmpeg has no x11grab).
   Drive input with `xdotool mousemove --window $WID <x> <y> click 1`
   (coords are window-relative, 1680×960 default size).
 

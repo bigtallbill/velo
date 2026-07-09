@@ -120,6 +120,8 @@ struct MediaItem {
     QString id;
     QString path;
     QString name;
+    // Bin folder the item lives in: "/"-separated path, empty = bin root.
+    QString bin;
     MediaKind kind = MediaKind::AV;
     double duration = 0;
     int width = 0, height = 0;
@@ -143,6 +145,8 @@ struct MediaItem {
 struct Project {
     QString filePath;  // empty = unsaved
     QList<MediaItem> media;
+    // All bin folder paths ("/"-separated), so empty folders persist.
+    QStringList bins;
     QList<Sequence> sequences;
     QStringList openTabs;  // sequence ids open in the timeline
     QString activeSequence;
@@ -150,6 +154,7 @@ struct Project {
 
     MediaItem *mediaById(const QString &id);
     const MediaItem *mediaByIdConst(const QString &id) const;
+    void ensureBin(const QString &path);  // record a bin folder + ancestors
     Sequence *sequenceById(const QString &id);
     const Sequence *sequenceByIdConst(const QString &id) const;
     quint64 takeClipId() { return nextClipId++; }

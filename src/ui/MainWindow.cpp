@@ -100,6 +100,9 @@ void MainWindow::buildMenus() {
     file->addSeparator();
     makeAction(file, "import_media", tr("Import Media…"), QKeySequence("Ctrl+I"),
                [this] { m_bin->importFilesDialog(); });
+    makeAction(file, "import_folder", tr("Import Folder…"),
+               QKeySequence("Ctrl+Shift+I"),
+               [this] { m_bin->importFolderDialog(); });
     makeAction(file, "new_sequence", tr("New Sequence…"), QKeySequence::New,
                [this] { newSequenceDialog(); });
     makeAction(file, "export", tr("Export…"), QKeySequence("Ctrl+M"),
