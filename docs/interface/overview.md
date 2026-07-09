@@ -13,8 +13,8 @@ Velo uses the panel layout most editors will recognize:
 
 ## Menus
 
-- **File** — project new/open/save, media import (files and folders), new
-  sequence, export, quit.
+- **File** — project new/open/save, recent projects, media import (files
+  and folders), new sequence, export, quit.
 - **Edit** — undo/redo, copy/paste, select all, split, delete and ripple
   delete, nesting, and the keyboard-shortcut editor.
 - **Sequence** — add video/audio tracks, add text, timeline zoom, magnetic

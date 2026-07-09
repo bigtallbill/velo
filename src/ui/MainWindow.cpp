@@ -9,6 +9,7 @@
 #include <QAudioDevice>
 #include <QCloseEvent>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QMediaDevices>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -62,6 +63,11 @@ MainWindow::MainWindow() {
 
     auto retitle = [this] { updateTitle(); };
     connect(&m_doc, &Document::projectLoaded, this, retitle);
+    // covers the open dialog, the recent menu and command-line loads
+    connect(&m_doc, &Document::projectLoaded, this, [this] {
+        if (!m_doc.project().filePath.isEmpty())
+            addRecentProject(m_doc.project().filePath);
+    });
     connect(&m_doc, &Document::sequenceChanged, this, retitle);
     connect(&m_doc, &Document::mediaChanged, this, retitle);
     statusBar()->showMessage(
@@ -93,6 +99,29 @@ void MainWindow::buildMenus() {
                });
     makeAction(file, "open_project", tr("Open Project…"), QKeySequence::Open,
                [this] { openProject(); });
+    QMenu *recent = file->addMenu(tr("Open Recent"));
+    connect(recent, &QMenu::aboutToShow, this, [this, recent] {
+        recent->clear();
+        const QStringList paths =
+            QSettings("velo", "velo").value("recentProjects").toStringList();
+        int shown = 0;
+        for (const QString &p : paths) {
+            if (!QFileInfo::exists(p)) continue;
+            QAction *a = recent->addAction(QFileInfo(p).fileName());
+            a->setStatusTip(p);  // disambiguates same-named projects
+            connect(a, &QAction::triggered, this, [this, p] {
+                if (maybeSave()) openProjectPath(p);
+            });
+            ++shown;
+        }
+        if (!shown) recent->addAction(tr("(no recent projects)"))->setEnabled(false);
+        recent->addSeparator();
+        QAction *clear = recent->addAction(tr("Clear List"));
+        clear->setEnabled(shown > 0);
+        connect(clear, &QAction::triggered, this, [] {
+            QSettings("velo", "velo").remove("recentProjects");
+        });
+    });
     makeAction(file, "save_project", tr("Save Project"), QKeySequence::Save,
                [this] { saveProject(false); });
     makeAction(file, "save_project_as", tr("Save Project As…"),
@@ -288,6 +317,7 @@ bool MainWindow::saveProject(bool saveAs) {
                              tr("Could not write %1").arg(path));
         return false;
     }
+    addRecentProject(path);
     updateTitle();
     statusBar()->showMessage(tr("Saved %1").arg(path), 4000);
     return true;
@@ -297,10 +327,24 @@ void MainWindow::openProject() {
     if (!maybeSave()) return;
     const QString path = QFileDialog::getOpenFileName(
         this, tr("Open Project"), QDir::homePath(), tr("Velo project (*.velo)"));
-    if (path.isEmpty()) return;
+    if (!path.isEmpty()) openProjectPath(path);
+}
+
+// Load without the unsaved-changes prompt — callers run maybeSave() first.
+void MainWindow::openProjectPath(const QString &path) {
     QString err;
     if (!m_doc.loadProject(path, &err))
         QMessageBox::warning(this, tr("Open failed"), err);
+}
+
+void MainWindow::addRecentProject(const QString &path) {
+    QSettings settings("velo", "velo");
+    QStringList list = settings.value("recentProjects").toStringList();
+    const QString abs = QFileInfo(path).absoluteFilePath();
+    list.removeAll(abs);
+    list.prepend(abs);
+    while (list.size() > 10) list.removeLast();
+    settings.setValue("recentProjects", list);
 }
 
 void MainWindow::newSequenceDialog() {

@@ -27,6 +27,8 @@ private:
     bool maybeSave();
     bool saveProject(bool saveAs);
     void openProject();
+    void openProjectPath(const QString &path);
+    static void addRecentProject(const QString &path);
     void newSequenceDialog();
     void addTextAtPlayhead();
     void exportDialog();

@@ -11,6 +11,8 @@ control and can be inspected or repaired in a text editor.
 - **Save** — ++ctrl+s++; **Save As** — ++ctrl+shift+s++.
 - **Open** — ++ctrl+o++; you can also pass a project on the command line:
   `velo myproject.velo`.
+- **Open Recent** — *File → Open Recent* lists your last ten projects
+  (missing files are hidden); *Clear List* empties it.
 - **New project** — ++ctrl+alt+n++.
 
 The window title shows the project name with a `*` for unsaved changes,
