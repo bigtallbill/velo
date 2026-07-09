@@ -35,7 +35,8 @@ private:
     class MediaTreeWidget *m_tree;
     QLineEdit *m_search;
     QHash<QString, QIcon> m_thumbs;
-    QSet<QString> m_collapsed;  // folder paths the user collapsed
+    QSet<QString> m_thumbPending;  // ids with a decode in flight
+    QSet<QString> m_collapsed;     // folder paths the user collapsed
     bool m_refreshing = false;
 
 protected:

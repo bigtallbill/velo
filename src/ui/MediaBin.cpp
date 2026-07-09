@@ -209,8 +209,10 @@ static QIcon paintIcon(const QImage &frame, const QColor &fallback,
 }
 
 void MediaBin::makeThumbnail(const QString &mediaId) {
+    if (m_thumbPending.contains(mediaId)) return;  // decode already running
     const MediaItem *m = m_doc->project().mediaByIdConst(mediaId);
     if (!m) return;
+    m_thumbPending.insert(mediaId);
     const MediaItem item = *m;
     auto fut = QtConcurrent::run([this, item] {
         QImage frame;
@@ -223,10 +225,20 @@ void MediaBin::makeThumbnail(const QString &mediaId) {
         QMetaObject::invokeMethod(
             this,
             [this, frame, id = item.id] {
+                m_thumbPending.remove(id);
                 m_thumbs[id] = paintIcon(frame, Theme::audioClip(), frame.isNull()
                                                                        ? "note"
                                                                        : QString());
-                refresh();
+                // Update the item in place. A refresh() here would rebuild
+                // the tree and re-request every still-missing thumbnail per
+                // completion — quadratic decodes when loading a project.
+                m_refreshing = true;  // icon set must not trigger a rename
+                for (QTreeWidgetItemIterator it(m_tree); *it; ++it)
+                    if (refOf(*it) == "media:" + id) {
+                        (*it)->setIcon(0, m_thumbs[id]);
+                        break;
+                    }
+                m_refreshing = false;
             },
             Qt::QueuedConnection);
     });
