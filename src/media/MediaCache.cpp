@@ -212,10 +212,29 @@ QImage VideoDecoder::frameAt(double t, int maxW, bool approx) {
     outW &= ~1;
     if (outW < 2) outW = 2;
 
-    m_sws = sws_getCachedContext(m_sws, natW, natH, AVPixelFormat(m_frame->format),
+    // swscale warns on the deprecated yuvj* formats; hand it the plain
+    // format plus an explicit full-range flag instead.
+    AVPixelFormat srcFmt = AVPixelFormat(m_frame->format);
+    bool fullRange = m_frame->color_range == AVCOL_RANGE_JPEG;
+    switch (srcFmt) {
+    case AV_PIX_FMT_YUVJ420P: srcFmt = AV_PIX_FMT_YUV420P; fullRange = true; break;
+    case AV_PIX_FMT_YUVJ422P: srcFmt = AV_PIX_FMT_YUV422P; fullRange = true; break;
+    case AV_PIX_FMT_YUVJ444P: srcFmt = AV_PIX_FMT_YUV444P; fullRange = true; break;
+    case AV_PIX_FMT_YUVJ440P: srcFmt = AV_PIX_FMT_YUV440P; fullRange = true; break;
+    case AV_PIX_FMT_YUVJ411P: srcFmt = AV_PIX_FMT_YUV411P; fullRange = true; break;
+    default: break;
+    }
+    m_sws = sws_getCachedContext(m_sws, natW, natH, srcFmt,
                                  outW, outH, AV_PIX_FMT_BGRA, SWS_BILINEAR,
                                  nullptr, nullptr, nullptr);
     if (!m_sws) return m_lastImage;
+    if (fullRange) {
+        int *invTable, *table, srcRange, dstRange, b, c, s;
+        if (sws_getColorspaceDetails(m_sws, &invTable, &srcRange, &table,
+                                     &dstRange, &b, &c, &s) >= 0 &&
+            !srcRange)  // only touch a context once (they are cached)
+            sws_setColorspaceDetails(m_sws, invTable, 1, table, dstRange, b, c, s);
+    }
     QImage img(outW, outH, QImage::Format_ARGB32);
     uint8_t *dst[4] = {img.bits(), nullptr, nullptr, nullptr};
     int dstStride[4] = {int(img.bytesPerLine()), 0, 0, 0};
