@@ -11,6 +11,17 @@
     in
     {
       packages = forAllSystems (pkgs: {
+        # End-user documentation (MkDocs Material): nix build .#docs
+        docs = pkgs.runCommand "velo-docs"
+          {
+            nativeBuildInputs = [
+              (pkgs.python3.withPackages (ps: [ ps.mkdocs ps.mkdocs-material ]))
+            ];
+          } ''
+          cd ${self}
+          mkdocs build --strict --site-dir $out
+        '';
+
         default = pkgs.stdenv.mkDerivation {
           pname = "velo";
           version = "0.0.1"; # keep in sync with project(... VERSION) in CMakeLists.txt
@@ -50,7 +61,11 @@
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
           inputsFrom = [ self.packages.${pkgs.stdenv.hostPlatform.system}.default ];
-          packages = [ pkgs.ffmpeg ]; # ffmpeg CLI for export
+          packages = [
+            pkgs.ffmpeg # ffmpeg CLI for export
+            # docs: mkdocs serve / mkdocs build
+            (pkgs.python3.withPackages (ps: [ ps.mkdocs ps.mkdocs-material ]))
+          ];
 
           # The freshly built ./build/velo is unwrapped, so point Qt at the
           # platform/imageformat/multimedia plugins from the shell instead.

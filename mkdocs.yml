@@ -1,0 +1,70 @@
+site_name: Velo Documentation
+site_description: >-
+  User guide for Velo — a fast, friendly non-linear video editor for
+  Linux, Windows and macOS.
+repo_url: https://github.com/notune/velo
+repo_name: notune/velo
+edit_uri: ""
+
+theme:
+  name: material
+  logo: assets/velo.svg
+  favicon: assets/velo.svg
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: deep purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: deep purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - footnotes
+  - tables
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.keys
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Installation: getting-started/installation.md
+      - Quick start: getting-started/quick-start.md
+  - Interface:
+      - Overview: interface/overview.md
+      - Project panel: interface/project-panel.md
+      - Media Preview monitor: interface/media-preview.md
+      - Sequence monitor: interface/sequence-monitor.md
+      - Timeline: interface/timeline.md
+      - Effect Controls: interface/effect-controls.md
+  - Editing:
+      - Sequences: editing/sequences.md
+      - Working with clips: editing/clips.md
+      - Keyframes & animation: editing/keyframes.md
+      - Audio: editing/audio.md
+      - Titles: editing/titles.md
+  - Effects & transitions:
+      - Applying effects: effects/applying.md
+      - Effect reference: effects/reference.md
+      - Transitions: effects/transitions.md
+  - Exporting: export.md
+  - Projects & undo: projects.md
+  - Keyboard shortcuts: shortcuts.md
+  - FAQ & troubleshooting: faq.md
